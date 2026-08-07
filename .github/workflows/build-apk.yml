@@ -22,6 +22,11 @@ jobs:
             flutter create --platforms=android --project-name bas_zincir --org com.baszincir .
           fi
 
+      - name: Kotlin surumunu guncelle
+        run: |
+          sed -i -E 's/(org\.jetbrains\.kotlin\.android"? version )"[^"]+"/\1"2.1.0"/' android/settings.gradle
+          cat android/settings.gradle
+
       - name: Bagimliliklari indir
         run: flutter pub get
 
