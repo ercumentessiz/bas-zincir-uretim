@@ -27,7 +27,7 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> records = [];
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> operators = [];
-  String? resetDate;
+  Map<String, String> productResetDates = {};
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
@@ -86,7 +86,8 @@ class AppState extends ChangeNotifier {
     });
 
     _db.collection('meta').doc('settings').snapshots().listen((doc) {
-      resetDate = doc.data()?['resetDate'] as String?;
+      final raw = doc.data()?['productResetDates'];
+      productResetDates = raw == null ? {} : Map<String, String>.from(raw as Map);
       notifyListeners();
     });
   }
@@ -121,18 +122,22 @@ class AppState extends ChangeNotifier {
   Future<void> addOperator(String name) => _db.collection('operators').add({'name': name});
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
 
-  // ---- Sayaç sıfırlama ----
-  Future<void> resetTotals() => _db.collection('meta').doc('settings').set({'resetDate': dateNow()}, SetOptions(merge: true));
+  // ---- Ürün bazlı sayaç sıfırlama ----
+  Future<void> resetProductTotal(String productName) =>
+      _db.collection('meta').doc('settings').set({'productResetDates.$productName': dateNow()}, SetOptions(merge: true));
 
-  bool _afterReset(String date) => resetDate == null || date.compareTo(resetDate!) >= 0;
+  bool _afterReset(String product, String date) {
+    final r = productResetDates[product];
+    return r == null || date.compareTo(r) >= 0;
+  }
 
   double totalKgForProduct(String name) => records
-      .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(r['date'] as String))
+      .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
       .fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
 
   DateTime? firstDateForProduct(String name) {
     final ds = records
-        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(r['date'] as String))
+        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
         .map((r) => DateTime.tryParse(r['date'] as String))
         .whereType<DateTime>()
         .toList();
@@ -317,7 +322,16 @@ class DashboardPage extends StatelessWidget {
       Text('Bugünkü Kayıtlar', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
       if (todayRecords.isEmpty) const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bugün henüz kayıt bulunmuyor.'))),
+      if (appState.isAdmin && todayRecords.isNotEmpty)
+        Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('Düzeltmek için bir kayda dokunun', style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
       ...todayRecords.map((r) => Card(child: ListTile(
+        onTap: appState.isAdmin ? () => showModalBottomSheet(
+          context: context, isScrollControlled: true,
+          builder: (_) => Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+            child: EditRecordSheet(record: r),
+          ),
+        ) : null,
         leading: CircleAvatar(child: Text(r['machine'].toString().replaceAll('Makine ', '').replaceAll('Spanzet ', ''))),
         title: Text(r['machine']),
         subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'),
@@ -341,9 +355,19 @@ class EntryPage extends StatefulWidget {
 class _EntryPageState extends State<EntryPage> {
   String machine = 'Makine 1', operator = '', shift = 'Gündüz', status = 'Üretimde';
   String? productId;
+  DateTime selectedDate = DateTime.now();
   final qty = TextEditingController();
   final note = TextEditingController();
   bool saving = false;
+
+  Future<void> pickDate() async {
+    final d = await showDatePicker(
+      context: context, initialDate: selectedDate,
+      firstDate: DateTime.now().subtract(const Duration(days: 60)),
+      lastDate: DateTime.now(),
+    );
+    if (d != null) setState(() => selectedDate = d);
+  }
 
   List<Map<String, dynamic>> get availableProducts {
     final all = appState.products;
@@ -370,7 +394,7 @@ class _EntryPageState extends State<EntryPage> {
     setState(() => saving = true);
     try {
       await appState.add({
-        'date': dateNow(), 'machine': machine, 'product': p['name'], 'gram': gram,
+        'date': dateStr(selectedDate), 'machine': machine, 'product': p['name'], 'gram': gram,
         'operator': operator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim()
       });
       qty.clear(); note.clear();
@@ -394,6 +418,13 @@ class _EntryPageState extends State<EntryPage> {
       const Logo(height: 52), const SizedBox(height: 10),
       Text('Üretim Girişi', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 16),
+      Card(child: ListTile(
+        leading: const Icon(Icons.event),
+        title: const Text('Üretim Tarihi'),
+        subtitle: Text('${selectedDate.day.toString().padLeft(2, '0')}.${selectedDate.month.toString().padLeft(2, '0')}.${selectedDate.year}'),
+        trailing: TextButton(onPressed: pickDate, child: const Text('Değiştir')),
+      )),
+      const SizedBox(height: 10),
       _dd('Makine / Bölüm', machine, machineList, (v) => setState(() => machine = v!)),
       if (list.isEmpty)
         const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
@@ -646,14 +677,28 @@ class ReportsPage extends StatefulWidget {
 
 class _ReportsPageState extends State<ReportsPage> {
   String query = '';
+
+  Future<void> confirmReset(String name) async {
+    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+      title: const Text('Ürünü Sıfırla'),
+      content: Text('"$name" için kümülatif toplam bugünden itibaren sıfırdan sayılmaya başlayacak. Geçmiş kayıtlar silinmez, sadece bu ürünün toplamı bu tarihten itibaren hesaplanır. Emin misiniz?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sıfırla')),
+      ],
+    ));
+    if (ok == true) {
+      await appState.resetProductTotal(name);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" sıfırlandı.')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final names = appState.products.map((p) => p['name'] as String).where((n) => n.toLowerCase().contains(query.toLowerCase())).toList();
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
       Text('Ürün Üretim Raporu', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
-      if (appState.resetDate != null)
-        Padding(padding: const EdgeInsets.only(top: 4), child: Text('${appState.resetDate} tarihinden itibaren', style: TextStyle(color: Colors.grey.shade600, fontSize: 12))),
       const SizedBox(height: 12),
       TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder())),
       const SizedBox(height: 12),
@@ -662,14 +707,20 @@ class _ReportsPageState extends State<ReportsPage> {
         final d = appState.firstDateForProduct(name);
         final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
         final qty = gram == 0 ? 0 : kg * 1000 / gram;
-        return Card(child: ListTile(
+        final resetD = appState.productResetDates[name];
+        return Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: ListTile(
           title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text('İlk üretim: ${d == null ? "—" : dateStr(d)}\nToplam bakla: ${qty.toStringAsFixed(0)}'),
+          subtitle: Text('İlk üretim: ${d == null ? "—" : dateStr(d)}\nToplam bakla: ${qty.toStringAsFixed(0)}'
+              '${resetD != null ? '\n$resetD tarihinden itibaren' : ''}'),
+          isThreeLine: true,
           trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-            Text('${fmtTon(kg)} ton')
+            Text('${fmtTon(kg)} ton'),
+            const SizedBox(height: 4),
+            if (appState.isAdmin)
+              InkWell(onTap: () => confirmReset(name), child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red))),
           ]),
-        ));
+        )));
       })
     ]));
   }
@@ -679,21 +730,6 @@ class _ReportsPageState extends State<ReportsPage> {
 
 class ManagementPage extends StatelessWidget {
   const ManagementPage({super.key});
-
-  Future<void> confirmReset(BuildContext context) async {
-    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
-      title: const Text('Toplamları Sıfırla'),
-      content: const Text('Raporlar sekmesindeki kümülatif toplamlar bugünden itibaren sıfırdan sayılmaya başlayacak. Geçmiş kayıtlar silinmez, sadece toplamlar bu tarihten itibaren hesaplanır. Emin misiniz?'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
-        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sıfırla')),
-      ],
-    ));
-    if (ok == true) {
-      await appState.resetTotals();
-      if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Toplamlar sıfırlandı.')));
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -726,12 +762,6 @@ class ManagementPage extends StatelessWidget {
         subtitle: Text('${appState.operators.length} operatör'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const OperatorsManagePage())),
-      )),
-      Card(child: ListTile(
-        leading: const Icon(Icons.restart_alt, color: Colors.red),
-        title: const Text('Toplamları Sıfırla'),
-        subtitle: const Text('Kümülatif raporları bugünden başlat'),
-        onTap: () => confirmReset(context),
       )),
       const SizedBox(height: 8),
       OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
