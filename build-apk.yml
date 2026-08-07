@@ -1,0 +1,35 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Android platform dosyalarini olustur (yoksa)
+        run: |
+          if [ ! -f android/app/build.gradle ] && [ ! -f android/app/build.gradle.kts ]; then
+            flutter create --platforms=android .
+          fi
+
+      - name: Bagimliliklari indir
+        run: flutter pub get
+
+      - name: APK derle (release)
+        run: flutter build apk --release
+
+      - name: APK'yi paylas
+        uses: actions/upload-artifact@v4
+        with:
+          name: bas-zincir-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
