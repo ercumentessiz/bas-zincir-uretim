@@ -22,9 +22,10 @@ jobs:
             flutter create --platforms=android --project-name bas_zincir --org com.baszincir .
           fi
 
-      - name: Kotlin surumunu guncelle
+      - name: Kotlin ve AGP surumlerini guncelle
         run: |
           sed -i -E 's/(org\.jetbrains\.kotlin\.android"? version )"[^"]+"/\1"2.1.0"/' android/settings.gradle
+          sed -i -E 's/(com\.android\.application"? version )"[^"]+"/\1"7.4.2"/' android/settings.gradle
           cat android/settings.gradle
 
       - name: Bagimliliklari indir
