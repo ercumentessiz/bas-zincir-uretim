@@ -27,6 +27,14 @@ jobs:
       - name: Bagimliliklari indir
         run: flutter pub get
 
+      - name: Uygulama adini ayarla
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="Baş Zincir"/' android/app/src/main/AndroidManifest.xml
+          grep android:label android/app/src/main/AndroidManifest.xml
+
+      - name: Uygulama ikonunu olustur
+        run: dart run flutter_launcher_icons
+
       - name: APK derle (release)
         run: flutter build apk --release
 
