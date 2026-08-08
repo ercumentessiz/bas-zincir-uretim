@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'firebase_options.dart';
 import 'products.dart' as seed;
+import 'stock_seed.dart';
 
 const defaultOperatorNames = [
   'Ekrem Ünal', 'Ozan Tüzün', 'Emircan Akyar', 'Mehmet Kavrık',
@@ -29,12 +30,14 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> operators = [];
   List<Map<String, dynamic>> machines = [];
+  List<Map<String, dynamic>> stock = [];
   Map<String, String> productResetDates = {};
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
   bool _seededOperators = false;
   bool _seededMachines = false;
+  bool _seededStock = false;
 
   void init() {
     FirebaseAuth.instance.authStateChanges().listen((u) {
@@ -111,6 +114,30 @@ class AppState extends ChangeNotifier {
       }).toList();
       notifyListeners();
     });
+
+    _db.collection('stock').orderBy('cap').snapshots().listen((snap) async {
+      if (snap.docs.isEmpty && !_seededStock) {
+        _seededStock = true;
+        final batch = _db.batch();
+        for (final s in stockSeed) {
+          batch.set(_db.collection('stock').doc(), {'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': s['kg']});
+        }
+        await batch.commit();
+        return;
+      }
+      final list = snap.docs.map((d) {
+        final m = Map<String, dynamic>.from(d.data());
+        m['id'] = d.id;
+        return m;
+      }).toList();
+      list.sort((a, b) {
+        final c = (a['cap'] as num).compareTo(b['cap'] as num);
+        if (c != 0) return c;
+        return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
+      });
+      stock = list;
+      notifyListeners();
+    });
   }
 
   bool get isAdmin => currentUser != null;
@@ -149,6 +176,14 @@ class AppState extends ChangeNotifier {
     await _db.collection('machines').add({'name': name, 'order': nextOrder});
   }
   Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
+
+  // ---- Hammadde Stoku ----
+  Future<void> addStock(double cap, String malzeme, double kg) =>
+      _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg});
+  Future<void> updateStockKg(String id, double kg) => _db.collection('stock').doc(id).update({'kg': kg});
+  Future<void> deleteStock(String id) => _db.collection('stock').doc(id).delete();
+
+  double get totalStockKg => stock.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
 
   // ---- Ürün bazlı sayaç sıfırlama ----
   Future<void> resetProductTotal(String productName) =>
@@ -235,6 +270,7 @@ class _HomePageState extends State<HomePage> {
       const DashboardPage(),
       if (isAdmin) const EntryPage(),
       const CalendarPage(),
+      const StockPage(),
       const ReportsPage(),
       isAdmin ? const ManagementPage() : const LoginPage(),
     ];
@@ -242,6 +278,7 @@ class _HomePageState extends State<HomePage> {
       const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Özet'),
       if (isAdmin) const NavigationDestination(icon: Icon(Icons.add_circle_outline), selectedIcon: Icon(Icons.add_circle), label: 'Giriş'),
       const NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Takvim'),
+      const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Stok'),
       const NavigationDestination(icon: Icon(Icons.assessment_outlined), selectedIcon: Icon(Icons.assessment), label: 'Raporlar'),
       NavigationDestination(
         icon: Icon(isAdmin ? Icons.settings_outlined : Icons.login),
@@ -281,6 +318,11 @@ String displayMachine(String m) {
   final match = RegExp(r'^Makine (\d+)$').firstMatch(m);
   if (match != null) return '${match.group(1)}. Makine';
   return m;
+}
+
+String fmtCap(num c) {
+  final isWhole = c % 1 == 0;
+  return isWhole ? '${c.toInt()} mm' : '${c.toString().replaceAll('.', ',')} mm';
 }
 
 List<Map<String, dynamic>> sortedRecords(List<Map<String, dynamic>> list) {
@@ -726,6 +768,98 @@ class _CalendarPageState extends State<CalendarPage> {
         subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
+      ))),
+    ]));
+  }
+}
+
+// =================== HAMMADDE STOKU ===================
+
+class StockPage extends StatefulWidget {
+  const StockPage({super.key});
+  @override
+  State<StockPage> createState() => _StockPageState();
+}
+
+class _StockPageState extends State<StockPage> {
+  final cap = TextEditingController();
+  final malzeme = TextEditingController();
+  final kg = TextEditingController();
+
+  Future<void> add() async {
+    final c = double.tryParse(cap.text.replaceAll(',', '.'));
+    final k = double.tryParse(kg.text.replaceAll(',', '.'));
+    if (c == null || malzeme.text.trim().isEmpty || k == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Çap, malzeme ve miktarı doğru girin.')));
+      return;
+    }
+    await appState.addStock(c, malzeme.text.trim(), k);
+    cap.clear(); malzeme.clear(); kg.clear();
+  }
+
+  Future<void> editKg(Map<String, dynamic> item) async {
+    final ctrl = TextEditingController(text: (item['kg'] as num).toString().replaceAll('.', ','));
+    final result = await showDialog<double>(context: context, builder: (_) => AlertDialog(
+      title: Text('${fmtCap(item['cap'] as num)} • ${item['malzeme']}'),
+      content: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Güncel stok (kg)', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () {
+          final v = double.tryParse(ctrl.text.replaceAll(',', '.'));
+          Navigator.pop(context, v);
+        }, child: const Text('Kaydet')),
+      ],
+    ));
+    if (result != null) await appState.updateStockKg(item['id'], result);
+  }
+
+  Future<void> confirmDelete(String id, String label) async {
+    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+      title: const Text('Kalemi sil'),
+      content: Text('"$label" listeden silinsin mi?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sil')),
+      ],
+    ));
+    if (ok == true) await appState.deleteStock(id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+      const Logo(height: 52), const SizedBox(height: 8),
+      Text('Hammadde Stoku', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 12),
+      Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Text('TOPLAM STOK', style: TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text('${fmtKg(appState.totalStockKg)} kg  •  ${fmtTon(appState.totalStockKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+      ]))),
+      const SizedBox(height: 12),
+      if (appState.isAdmin) Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [
+        Row(children: [
+          Expanded(child: TextField(controller: cap, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Çap (mm)', border: OutlineInputBorder()))),
+          const SizedBox(width: 8),
+          Expanded(child: TextField(controller: malzeme, decoration: const InputDecoration(labelText: 'Malzeme', border: OutlineInputBorder()))),
+        ]),
+        const SizedBox(height: 10),
+        TextField(controller: kg, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Miktar (kg)', border: OutlineInputBorder())),
+        const SizedBox(height: 10),
+        SizedBox(width: double.infinity, child: FilledButton(onPressed: add, child: const Text('Yeni Kalem Ekle'))),
+      ]))),
+      const SizedBox(height: 12),
+      if (appState.stock.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Henüz hammadde stok kaydı yok.')),
+      ...appState.stock.map((s) => Card(child: ListTile(
+        title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (appState.isAdmin) ...[
+            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
+            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
+          ],
+        ]),
       ))),
     ]));
   }
