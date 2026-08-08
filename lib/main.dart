@@ -37,9 +37,11 @@ class AppState extends ChangeNotifier {
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
+  bool _migratedProductOrder = false;
   bool _seededOperators = false;
   bool _seededMachines = false;
   bool _seededStock = false;
+  bool _migratedStockOrder = false;
 
   void init() {
     FirebaseAuth.instance.authStateChanges().listen((u) {
@@ -73,6 +75,19 @@ class AppState extends ChangeNotifier {
         m['id'] = d.id;
         return m;
       }).toList();
+      final missingOrder = list.where((p) => p['order'] == null).toList();
+      if (missingOrder.isNotEmpty && !_migratedProductOrder) {
+        _migratedProductOrder = true;
+        missingOrder.sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
+        final maxExisting = list.where((p) => p['order'] != null)
+            .map((p) => (p['order'] as num).toInt()).fold(-1, (m, v) => v > m ? v : m);
+        final batch = _db.batch();
+        for (var i = 0; i < missingOrder.length; i++) {
+          batch.update(_db.collection('products').doc(missingOrder[i]['id'] as String), {'order': maxExisting + 1 + i});
+        }
+        await batch.commit();
+        return;
+      }
       list.sort((a, b) {
         final oa = (a['order'] as num?)?.toInt();
         final ob = (b['order'] as num?)?.toInt();
@@ -143,6 +158,23 @@ class AppState extends ChangeNotifier {
         m['id'] = d.id;
         return m;
       }).toList();
+      final missingOrder = list.where((s) => s['order'] == null).toList();
+      if (missingOrder.isNotEmpty && !_migratedStockOrder) {
+        _migratedStockOrder = true;
+        missingOrder.sort((a, b) {
+          final c = (a['cap'] as num).compareTo(b['cap'] as num);
+          if (c != 0) return c;
+          return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
+        });
+        final maxExisting = list.where((s) => s['order'] != null)
+            .map((s) => (s['order'] as num).toInt()).fold(-1, (m, v) => v > m ? v : m);
+        final batch = _db.batch();
+        for (var i = 0; i < missingOrder.length; i++) {
+          batch.update(_db.collection('stock').doc(missingOrder[i]['id'] as String), {'order': maxExisting + 1 + i});
+        }
+        await batch.commit();
+        return;
+      }
       list.sort((a, b) {
         final oa = (a['order'] as num?)?.toInt();
         final ob = (b['order'] as num?)?.toInt();
@@ -208,8 +240,8 @@ class AppState extends ChangeNotifier {
   }
 
   bool isProductActiveToday(String name) {
-    final today = dateNow();
-    return records.any((r) => r['date'] == today && r['status'] == 'Üretimde' && r['product'] == name);
+    final d = dateStr(businessReportDate());
+    return records.any((r) => r['date'] == d && r['status'] == 'Üretimde' && r['product'] == name);
   }
 
   // ---- Operatörler ----
@@ -399,6 +431,22 @@ String fmtKg(double v) => v.toStringAsFixed(2).replaceAll('.', ',');
 String fmtTon(double v) => (v / 1000).toStringAsFixed(3).replaceAll('.', ',');
 String dateNow() => DateTime.now().toIso8601String().substring(0, 10);
 String dateStr(DateTime d) => d.toIso8601String().substring(0, 10);
+
+/// Özet ekranında gösterilecek "işletme günü". Üretim bir gün gecikmeli
+/// girildiği için normalde dün, ama Pazar/Pazartesi günleri Cuma gösterilir
+/// (hafta sonu çalışılmadığı için).
+DateTime businessReportDate() {
+  final now = DateTime.now();
+  if (now.weekday == DateTime.sunday) return now.subtract(const Duration(days: 2));
+  if (now.weekday == DateTime.monday) return now.subtract(const Duration(days: 3));
+  return now.subtract(const Duration(days: 1));
+}
+
+String recordsSectionTitle() {
+  final now = DateTime.now();
+  if (now.weekday == DateTime.sunday || now.weekday == DateTime.monday) return 'Cuma Günkü Kayıtlar';
+  return 'Dünkü Kayıtlar';
+}
 String fmtDate(String iso) {
   final p = iso.split('-');
   if (p.length != 3) return iso;
@@ -512,7 +560,8 @@ class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
   @override
   Widget build(BuildContext context) {
-    final today = dateNow();
+    final today = dateStr(businessReportDate());
+    final sectionTitle = recordsSectionTitle();
     final todayRecords = sortedRecords(appState.recordsForDate(today));
     final active = todayRecords.where((r) => r['status'] == 'Üretimde').length;
     final setup = todayRecords.where((r) => r['status'] == 'Ayar Dönülüyor').length;
@@ -524,7 +573,7 @@ class DashboardPage extends StatelessWidget {
       Text(fmtDate(today), style: Theme.of(context).textTheme.bodyMedium),
       const SizedBox(height: 16),
       Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('TOPLAM ÜRETİM (Bugün)', style: TextStyle(fontWeight: FontWeight.w600)),
+        const Text('TOPLAM ÜRETİM', style: TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 6),
         Text('${fmtTon(appState.totalTodayKg(today))} ton', style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800)),
         Text('${fmtKg(appState.totalTodayKg(today))} kg', style: TextStyle(color: Colors.grey.shade700)),
@@ -536,9 +585,9 @@ class DashboardPage extends StatelessWidget {
         const SizedBox(width: 8), Expanded(child: _stat('Arıza', broken, Colors.red)),
       ]),
       const SizedBox(height: 18),
-      Text('Bugünkü Kayıtlar', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+      Text(sectionTitle, style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      if (todayRecords.isEmpty) const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bugün henüz kayıt bulunmuyor.'))),
+      if (todayRecords.isEmpty) const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte kayıt bulunmuyor.'))),
       if (appState.isAdmin && todayRecords.isNotEmpty)
         Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('Düzeltmek için bir kayda dokunun', style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
       ...todayRecords.map((r) => Card(child: ListTile(
@@ -559,7 +608,7 @@ class DashboardPage extends StatelessWidget {
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
       if (appState.wiredrawForDate(today).isEmpty)
-        const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bugün henüz tel çekme kaydı yok.'))),
+        const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte tel çekme kaydı yok.'))),
       ...appState.wiredrawForDate(today).map((w) => Card(child: ListTile(
         onTap: appState.isAdmin ? () => confirmDeleteWiredraw(context, w) : null,
         title: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']}'),
@@ -960,7 +1009,16 @@ class _CalendarPageState extends State<CalendarPage> {
       ]))),
       const SizedBox(height: 12),
       if (list.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte kayıt bulunmuyor.')),
+      if (appState.isAdmin && list.isNotEmpty)
+        Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('Düzeltmek için bir kayda dokunun', style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
       ...list.map((r) => Card(child: ListTile(
+        onTap: appState.isAdmin ? () => showModalBottomSheet(
+          context: context, isScrollControlled: true,
+          builder: (_) => Padding(
+            padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+            child: EditRecordSheet(record: r),
+          ),
+        ) : null,
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
