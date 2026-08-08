@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -172,6 +173,13 @@ class BasZincirApp extends StatelessWidget {
       builder: (_, __) => MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'Baş Zincir',
+        locale: const Locale('tr', 'TR'),
+        supportedLocales: const [Locale('tr', 'TR')],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
         theme: ThemeData(
           useMaterial3: true,
           colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff243a9b)),
@@ -230,6 +238,33 @@ String fmtKg(double v) => v.toStringAsFixed(2).replaceAll('.', ',');
 String fmtTon(double v) => (v / 1000).toStringAsFixed(3).replaceAll('.', ',');
 String dateNow() => DateTime.now().toIso8601String().substring(0, 10);
 String dateStr(DateTime d) => d.toIso8601String().substring(0, 10);
+String fmtDate(String iso) {
+  final p = iso.split('-');
+  if (p.length != 3) return iso;
+  return '${p[2]}.${p[1]}.${p[0]}';
+}
+
+int _machineIndex(String m) {
+  final i = machineList.indexOf(m);
+  return i == -1 ? machineList.length : i;
+}
+int _shiftOrder(String s) => s == 'Gündüz' ? 0 : (s == 'Gece' ? 1 : 2);
+
+String displayMachine(String m) {
+  final match = RegExp(r'^Makine (\d+)$').firstMatch(m);
+  if (match != null) return '${match.group(1)}. Makine';
+  return m;
+}
+
+List<Map<String, dynamic>> sortedRecords(List<Map<String, dynamic>> list) {
+  final copy = [...list];
+  copy.sort((a, b) {
+    final mi = _machineIndex(a['machine'] as String).compareTo(_machineIndex(b['machine'] as String));
+    if (mi != 0) return mi;
+    return _shiftOrder(a['shift'] as String).compareTo(_shiftOrder(b['shift'] as String));
+  });
+  return copy;
+}
 
 class Logo extends StatelessWidget {
   final double height;
@@ -296,7 +331,7 @@ class DashboardPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final today = dateNow();
-    final todayRecords = appState.recordsForDate(today);
+    final todayRecords = sortedRecords(appState.recordsForDate(today));
     final active = todayRecords.where((r) => r['status'] == 'Üretimde').length;
     final setup = todayRecords.where((r) => r['status'] == 'Ayar Dönülüyor').length;
     final broken = todayRecords.where((r) => ['Arızalı', 'Parça Kırdı'].contains(r['status'])).length;
@@ -304,7 +339,7 @@ class DashboardPage extends StatelessWidget {
       const Center(child: Logo(height: 70)),
       const SizedBox(height: 10),
       Text('Günlük Üretim Özeti', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
-      Text(today, style: Theme.of(context).textTheme.bodyMedium),
+      Text(fmtDate(today), style: Theme.of(context).textTheme.bodyMedium),
       const SizedBox(height: 16),
       Card(child: Padding(padding: const EdgeInsets.all(18), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('TOPLAM ÜRETİM (Bugün)', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -333,8 +368,9 @@ class DashboardPage extends StatelessWidget {
           ),
         ) : null,
         leading: CircleAvatar(child: Text(r['machine'].toString().replaceAll('Makine ', '').replaceAll('Spanzet ', ''))),
-        title: Text(r['machine']),
-        subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'),
+        title: Text(displayMachine(r['machine'])),
+        subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'
+            '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status'], textAlign: TextAlign.end),
       ))),
     ]));
@@ -425,7 +461,7 @@ class _EntryPageState extends State<EntryPage> {
         trailing: TextButton(onPressed: pickDate, child: const Text('Değiştir')),
       )),
       const SizedBox(height: 10),
-      _dd('Makine / Bölüm', machine, machineList, (v) => setState(() => machine = v!)),
+      _dd('Makine / Bölüm', machine, machineList, (v) => setState(() => machine = v!), labelOf: displayMachine),
       if (list.isEmpty)
         const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
       else
@@ -504,19 +540,19 @@ class _RecordsPageState extends State<RecordsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final list = appState.recordsForDate(date);
+    final list = sortedRecords(appState.recordsForDate(date));
     return Scaffold(
       appBar: AppBar(title: const Text('Kayıtları Düzenle')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
         Card(child: ListTile(
           leading: const Icon(Icons.event),
-          title: Text(date),
+          title: Text(fmtDate(date)),
           trailing: TextButton(onPressed: pickDate, child: const Text('Tarih Değiştir')),
         )),
         const SizedBox(height: 12),
         if (list.isEmpty) const Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte kayıt bulunmuyor.')),
         ...list.map((r) => Card(child: ListTile(
-          title: Text('${r['machine']} • ${r['product'] ?? r['status']}'),
+          title: Text('${displayMachine(r['machine'])} • ${r['product'] ?? r['status']}'),
           subtitle: Text('${r['status']}${r['status'] == 'Üretimde' ? ' • ${r['qty']} bakla • ${fmtKg((r['kg'] as num).toDouble())} kg' : ''}\n${r['operator']} • ${r['shift']}'),
           isThreeLine: true,
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -592,7 +628,7 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
       child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Kaydı Düzenle', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
         const SizedBox(height: 12),
-        _dd('Makine', machine, machineList, (v) => setState(() => machine = v!)),
+        _dd('Makine', machine, machineList, (v) => setState(() => machine = v!), labelOf: displayMachine),
         if (list.isNotEmpty)
           _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
               labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
@@ -640,7 +676,7 @@ class _CalendarPageState extends State<CalendarPage> {
   @override
   Widget build(BuildContext context) {
     final date = dateStr(selected);
-    final list = appState.recordsForDate(date);
+    final list = sortedRecords(appState.recordsForDate(date));
     final totalKg = list.where((r) => r['status'] == 'Üretimde').fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
@@ -652,15 +688,16 @@ class _CalendarPageState extends State<CalendarPage> {
       )),
       const SizedBox(height: 12),
       Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('$date Toplam Üretim', style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text('${fmtDate(date)} Toplam Üretim', style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Text('${fmtKg(totalKg)} kg  •  ${fmtTon(totalKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
       ]))),
       const SizedBox(height: 12),
       if (list.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte kayıt bulunmuyor.')),
       ...list.map((r) => Card(child: ListTile(
-        title: Text(r['machine']),
-        subtitle: Text('${r['product'] ?? r['status']} • ${r['operator']}'),
+        title: Text(displayMachine(r['machine'])),
+        subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
+            '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
       ))),
     ]));
@@ -710,8 +747,8 @@ class _ReportsPageState extends State<ReportsPage> {
         final resetD = appState.productResetDates[name];
         return Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: ListTile(
           title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text('İlk üretim: ${d == null ? "—" : dateStr(d)}\nToplam bakla: ${qty.toStringAsFixed(0)}'
-              '${resetD != null ? '\n$resetD tarihinden itibaren' : ''}'),
+          subtitle: Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}\nToplam bakla: ${qty.toStringAsFixed(0)}'
+              '${resetD != null ? '\n${fmtDate(resetD)} tarihinden itibaren' : ''}'),
           isThreeLine: true,
           trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
