@@ -1,0 +1,36 @@
+// 06.08.2026 tarihli HAMMADDE_STOK.xlsx dosyasından aktarılan başlangıç verisi.
+// Uygulama ilk açıldığında stok listesi boşsa bu veriyle bir kere doldurulur.
+// Sonrasında Yönetim > Stok Yönetimi'nden düzenlenir.
+
+const stockSeed = [
+  {'cap': 6.5, 'malzeme': '1006', 'kg': 6000.0},
+  {'cap': 6.5, 'malzeme': '20MnB4', 'kg': 1500.0},
+  {'cap': 7.0, 'malzeme': '1006', 'kg': 3000.0},
+  {'cap': 7.0, 'malzeme': '1008', 'kg': 6000.0},
+  {'cap': 7.5, 'malzeme': '1006', 'kg': 1500.0},
+  {'cap': 8.0, 'malzeme': '1006', 'kg': 9000.0},
+  {'cap': 8.0, 'malzeme': '20MnB4', 'kg': 1500.0},
+  {'cap': 8.0, 'malzeme': '23MnB4', 'kg': 2000.0},
+  {'cap': 8.5, 'malzeme': '20MnB4', 'kg': 3000.0},
+  {'cap': 9.0, 'malzeme': '1006', 'kg': 6000.0},
+  {'cap': 10.0, 'malzeme': '20MnB4', 'kg': 10500.0},
+  {'cap': 11.0, 'malzeme': '1006', 'kg': 6000.0},
+  {'cap': 11.0, 'malzeme': '20MnB4', 'kg': 1500.0},
+  {'cap': 12.0, 'malzeme': '1006', 'kg': 1500.0},
+  {'cap': 12.0, 'malzeme': '1008', 'kg': 1500.0},
+  {'cap': 12.0, 'malzeme': '20MnB4', 'kg': 6000.0},
+  {'cap': 13.0, 'malzeme': '1008', 'kg': 9000.0},
+  {'cap': 13.0, 'malzeme': '20MnB4', 'kg': 46500.0},
+  {'cap': 14.0, 'malzeme': '1008', 'kg': 1500.0},
+  {'cap': 14.0, 'malzeme': '20MnB4', 'kg': 6000.0},
+  {'cap': 15.0, 'malzeme': '20MnB4', 'kg': 6000.0},
+  {'cap': 16.0, 'malzeme': '1008', 'kg': 11500.0},
+  {'cap': 16.0, 'malzeme': '23MnB4', 'kg': 26000.0},
+  {'cap': 18.0, 'malzeme': '1008', 'kg': 4000.0},
+  {'cap': 18.0, 'malzeme': '20MnB4', 'kg': 6000.0},
+  {'cap': 20.0, 'malzeme': '1008', 'kg': 2000.0},
+  {'cap': 20.0, 'malzeme': 'SAE 1020', 'kg': 1000.0},
+  {'cap': 22.0, 'malzeme': 'ST 37', 'kg': 4050.0},
+  {'cap': 22.0, 'malzeme': 'ST 52', 'kg': 4000.0},
+  {'cap': 26.0, 'malzeme': 'ST 52', 'kg': 1000.0},
+];
