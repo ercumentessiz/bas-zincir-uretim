@@ -340,11 +340,13 @@ class BasZincirApp extends StatelessWidget {
         ),
         home: appState.loading
             ? const Scaffold(body: Center(child: CircularProgressIndicator()))
-            : const HomePage(),
+            : HomePage(key: homeKey),
       ),
     );
   }
 }
+
+final homeKey = GlobalKey<_HomePageState>();
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -353,6 +355,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  void goToHome() => setState(() => index = 0);
   int index = 0;
   bool _wasAdmin = false;
   @override
@@ -465,7 +468,11 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> doLogin() async {
     setState(() { busy = true; error = null; });
     final err = await appState.signIn(email.text.trim(), pass.text);
-    setState(() { busy = false; error = err; });
+    if (err == null) {
+      homeKey.currentState?.goToHome();
+    } else if (mounted) {
+      setState(() { busy = false; error = err; });
+    }
   }
 
   @override
@@ -641,19 +648,24 @@ class _EntryPageState extends State<EntryPage> {
         return;
       }
       setState(() => saving = true);
-      final err = await appState.addWiredraw(
-        date: dateStr(selectedDate), operator: operator, shift: shift,
-        stockId: stockId!, kg: k, note: note.text.trim(),
-      );
-      if (mounted) {
-        if (err != null) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
-        } else {
-          wireKg.clear(); note.clear();
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tel çekme kaydedildi, stok güncellendi.')));
+      try {
+        final err = await appState.addWiredraw(
+          date: dateStr(selectedDate), operator: operator, shift: shift,
+          stockId: stockId!, kg: k, note: note.text.trim(),
+        );
+        if (mounted) {
+          if (err != null) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+          } else {
+            wireKg.clear(); note.clear();
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tel çekme kaydedildi, stok güncellendi.')));
+          }
         }
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
+      } finally {
+        if (mounted) setState(() => saving = false);
       }
-      if (mounted) setState(() => saving = false);
     }
   }
 
