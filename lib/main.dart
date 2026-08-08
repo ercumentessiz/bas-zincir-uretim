@@ -955,6 +955,13 @@ class ManagementPage extends StatelessWidget {
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MachinesManagePage())),
       )),
       Card(child: ListTile(
+        leading: const Icon(Icons.inventory_outlined),
+        title: const Text('Stok Yönetimi'),
+        subtitle: Text('${appState.stock.length} kalem'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StockPage())),
+      )),
+      Card(child: ListTile(
         leading: const Icon(Icons.inventory_2_outlined),
         title: const Text('Ürün Yönetimi'),
         subtitle: Text('${appState.products.length} ürün'),
