@@ -14,7 +14,7 @@ const defaultOperatorNames = [
 
 const shifts = ['Gündüz', 'Gece'];
 const statuses = ['Üretimde', 'Ayar Dönülüyor', 'Arızalı', 'Parça Kırdı', 'Bakımda', 'Diğer'];
-const machineList = [
+const defaultMachineNames = [
   'Makine 1', 'Makine 2', 'Makine 3', 'Makine 4', 'Makine 5', 'Makine 6', 'Makine 7', 'Makine 8',
   'Makine 9', 'Makine 10', 'Makine 11', 'Makine 12', 'Makine 13', 'Makine 14', 'Makine 15', 'Makine 16',
   'Makine 17', 'Makine 18', 'Makine 19', 'Makine 20', 'Makine 21', 'Makine 22',
@@ -28,11 +28,13 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> records = [];
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> operators = [];
+  List<Map<String, dynamic>> machines = [];
   Map<String, String> productResetDates = {};
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
   bool _seededOperators = false;
+  bool _seededMachines = false;
 
   void init() {
     FirebaseAuth.instance.authStateChanges().listen((u) {
@@ -91,6 +93,24 @@ class AppState extends ChangeNotifier {
       productResetDates = raw == null ? {} : Map<String, String>.from(raw as Map);
       notifyListeners();
     });
+
+    _db.collection('machines').orderBy('order').snapshots().listen((snap) async {
+      if (snap.docs.isEmpty && !_seededMachines) {
+        _seededMachines = true;
+        final batch = _db.batch();
+        for (var i = 0; i < defaultMachineNames.length; i++) {
+          batch.set(_db.collection('machines').doc(), {'name': defaultMachineNames[i], 'order': i});
+        }
+        await batch.commit();
+        return;
+      }
+      machines = snap.docs.map((d) {
+        final m = Map<String, dynamic>.from(d.data());
+        m['id'] = d.id;
+        return m;
+      }).toList();
+      notifyListeners();
+    });
   }
 
   bool get isAdmin => currentUser != null;
@@ -122,6 +142,13 @@ class AppState extends ChangeNotifier {
   // ---- Operatörler ----
   Future<void> addOperator(String name) => _db.collection('operators').add({'name': name});
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
+
+  // ---- Makinalar ----
+  Future<void> addMachine(String name) async {
+    final nextOrder = machines.isEmpty ? 0 : machines.map((m) => (m['order'] as num).toInt()).reduce((a, b) => a > b ? a : b) + 1;
+    await _db.collection('machines').add({'name': name, 'order': nextOrder});
+  }
+  Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
 
   // ---- Ürün bazlı sayaç sıfırlama ----
   Future<void> resetProductTotal(String productName) =>
@@ -245,8 +272,8 @@ String fmtDate(String iso) {
 }
 
 int _machineIndex(String m) {
-  final i = machineList.indexOf(m);
-  return i == -1 ? machineList.length : i;
+  final i = appState.machines.indexWhere((x) => x['name'] == m);
+  return i == -1 ? appState.machines.length : i;
 }
 int _shiftOrder(String s) => s == 'Gündüz' ? 0 : (s == 'Gece' ? 1 : 2);
 
@@ -461,7 +488,7 @@ class _EntryPageState extends State<EntryPage> {
         trailing: TextButton(onPressed: pickDate, child: const Text('Değiştir')),
       )),
       const SizedBox(height: 10),
-      _dd('Makine / Bölüm', machine, machineList, (v) => setState(() => machine = v!), labelOf: displayMachine),
+      _dd('Makine / Bölüm', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
       if (list.isEmpty)
         const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
       else
@@ -628,7 +655,7 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
       child: SingleChildScrollView(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Kaydı Düzenle', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
         const SizedBox(height: 12),
-        _dd('Makine', machine, machineList, (v) => setState(() => machine = v!), labelOf: displayMachine),
+        _dd('Makine', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
         if (list.isNotEmpty)
           _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
               labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
@@ -787,6 +814,13 @@ class ManagementPage extends StatelessWidget {
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const RecordsPage())),
       )),
       Card(child: ListTile(
+        leading: const Icon(Icons.precision_manufacturing_outlined),
+        title: const Text('Makina Yönetimi'),
+        subtitle: Text('${appState.machines.length} makina'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MachinesManagePage())),
+      )),
+      Card(child: ListTile(
         leading: const Icon(Icons.inventory_2_outlined),
         title: const Text('Ürün Yönetimi'),
         subtitle: Text('${appState.products.length} ürün'),
@@ -803,6 +837,56 @@ class ManagementPage extends StatelessWidget {
       const SizedBox(height: 8),
       OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
     ]));
+  }
+}
+
+class MachinesManagePage extends StatefulWidget {
+  const MachinesManagePage({super.key});
+  @override
+  State<MachinesManagePage> createState() => _MachinesManagePageState();
+}
+
+class _MachinesManagePageState extends State<MachinesManagePage> {
+  final name = TextEditingController();
+
+  Future<void> add() async {
+    if (name.text.trim().isEmpty) return;
+    await appState.addMachine(name.text.trim());
+    name.clear();
+  }
+
+  Future<void> confirmDelete(String id, String label) async {
+    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+      title: const Text('Makinayı sil'),
+      content: Text('"$label" silinsin mi? Geçmiş üretim kayıtları etkilenmez.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sil')),
+      ],
+    ));
+    if (ok == true) await appState.deleteMachine(id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Makina Yönetimi')),
+      body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+        Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'Makina adı (örn. Makine 23)', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity, child: FilledButton(onPressed: add, child: const Text('Makina Ekle'))),
+        ]))),
+        const SizedBox(height: 8),
+        Text('Yeni makina en sona eklenir. "Makine N" formatında yazarsanız uygulama otomatik olarak "N. Makine" şeklinde gösterir.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        const SizedBox(height: 12),
+        ...appState.machines.map((m) => Card(child: ListTile(
+          title: Text(displayMachine(m['name'])),
+          trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(m['id'], m['name'])),
+        ))),
+      ])),
+    );
   }
 }
 
