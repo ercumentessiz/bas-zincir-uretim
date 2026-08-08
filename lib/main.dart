@@ -14,6 +14,7 @@ const defaultOperatorNames = [
 ];
 
 const shifts = ['Gündüz', 'Gece'];
+const turkishMonths = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 const statuses = ['Üretimde', 'Ayar Dönülüyor', 'Arızalı', 'Parça Kırdı', 'Bakımda', 'Diğer'];
 const defaultMachineNames = [
   'Makine 1', 'Makine 2', 'Makine 3', 'Makine 4', 'Makine 5', 'Makine 6', 'Makine 7', 'Makine 8',
@@ -31,6 +32,7 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> operators = [];
   List<Map<String, dynamic>> machines = [];
   List<Map<String, dynamic>> stock = [];
+  List<Map<String, dynamic>> wiredraw = [];
   Map<String, String> productResetDates = {};
   bool loading = true;
   User? currentUser;
@@ -55,21 +57,31 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }, onError: (_) { loading = false; notifyListeners(); });
 
-    _db.collection('products').orderBy('name').snapshots().listen((snap) async {
+    _db.collection('products').snapshots().listen((snap) async {
       if (snap.docs.isEmpty && !_seededProducts) {
         _seededProducts = true;
         final batch = _db.batch();
-        for (final p in seed.products) {
-          batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram']});
+        for (var i = 0; i < seed.products.length; i++) {
+          final p = seed.products[i];
+          batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram'], 'order': i});
         }
         await batch.commit();
         return;
       }
-      products = snap.docs.map((d) {
+      final list = snap.docs.map((d) {
         final m = Map<String, dynamic>.from(d.data());
         m['id'] = d.id;
         return m;
       }).toList();
+      list.sort((a, b) {
+        final oa = (a['order'] as num?)?.toInt();
+        final ob = (b['order'] as num?)?.toInt();
+        if (oa != null && ob != null) return oa.compareTo(ob);
+        if (oa != null) return -1;
+        if (ob != null) return 1;
+        return (a['name'] as String).compareTo(b['name'] as String);
+      });
+      products = list;
       notifyListeners();
     });
 
@@ -115,12 +127,13 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
 
-    _db.collection('stock').orderBy('cap').snapshots().listen((snap) async {
+    _db.collection('stock').snapshots().listen((snap) async {
       if (snap.docs.isEmpty && !_seededStock) {
         _seededStock = true;
         final batch = _db.batch();
-        for (final s in stockSeed) {
-          batch.set(_db.collection('stock').doc(), {'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': s['kg']});
+        for (var i = 0; i < stockSeed.length; i++) {
+          final s = stockSeed[i];
+          batch.set(_db.collection('stock').doc(), {'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': s['kg'], 'order': i});
         }
         await batch.commit();
         return;
@@ -131,11 +144,25 @@ class AppState extends ChangeNotifier {
         return m;
       }).toList();
       list.sort((a, b) {
+        final oa = (a['order'] as num?)?.toInt();
+        final ob = (b['order'] as num?)?.toInt();
+        if (oa != null && ob != null) return oa.compareTo(ob);
+        if (oa != null) return -1;
+        if (ob != null) return 1;
         final c = (a['cap'] as num).compareTo(b['cap'] as num);
         if (c != 0) return c;
         return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
       });
       stock = list;
+      notifyListeners();
+    });
+
+    _db.collection('wiredraw').orderBy('createdAt', descending: true).snapshots().listen((snap) {
+      wiredraw = snap.docs.map((d) {
+        final m = Map<String, dynamic>.from(d.data());
+        m['id'] = d.id;
+        return m;
+      }).toList();
       notifyListeners();
     });
   }
@@ -163,8 +190,27 @@ class AppState extends ChangeNotifier {
   Future<void> deleteRecord(String id) => _db.collection('records').doc(id).delete();
 
   // ---- Ürünler ----
-  Future<void> addProduct(String name, double gram) => _db.collection('products').add({'name': name, 'gram': gram});
+  Future<void> addProduct(String name, double gram) async {
+    final nextOrder = products.isEmpty ? 0 : products.map((p) => (p['order'] as num?)?.toInt() ?? 0).reduce((a, b) => a > b ? a : b) + 1;
+    await _db.collection('products').add({'name': name, 'gram': gram, 'order': nextOrder});
+  }
   Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
+
+  Future<void> reorderProducts(List<String> orderedIds) async {
+    final map = {for (final p in products) p['id'] as String: p};
+    products = orderedIds.where((id) => map.containsKey(id)).map((id) => map[id]!).toList();
+    notifyListeners();
+    final batch = _db.batch();
+    for (var i = 0; i < orderedIds.length; i++) {
+      batch.update(_db.collection('products').doc(orderedIds[i]), {'order': i});
+    }
+    await batch.commit();
+  }
+
+  bool isProductActiveToday(String name) {
+    final today = dateNow();
+    return records.any((r) => r['date'] == today && r['status'] == 'Üretimde' && r['product'] == name);
+  }
 
   // ---- Operatörler ----
   Future<void> addOperator(String name) => _db.collection('operators').add({'name': name});
@@ -178,12 +224,57 @@ class AppState extends ChangeNotifier {
   Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
 
   // ---- Hammadde Stoku ----
-  Future<void> addStock(double cap, String malzeme, double kg) =>
-      _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg});
+  Future<void> addStock(double cap, String malzeme, double kg) async {
+    final nextOrder = stock.isEmpty ? 0 : stock.map((s) => (s['order'] as num?)?.toInt() ?? 0).reduce((a, b) => a > b ? a : b) + 1;
+    await _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg, 'order': nextOrder});
+  }
   Future<void> updateStockKg(String id, double kg) => _db.collection('stock').doc(id).update({'kg': kg});
   Future<void> deleteStock(String id) => _db.collection('stock').doc(id).delete();
 
+  Future<void> reorderStock(List<String> orderedIds) async {
+    final map = {for (final s in stock) s['id'] as String: s};
+    stock = orderedIds.where((id) => map.containsKey(id)).map((id) => map[id]!).toList();
+    notifyListeners();
+    final batch = _db.batch();
+    for (var i = 0; i < orderedIds.length; i++) {
+      batch.update(_db.collection('stock').doc(orderedIds[i]), {'order': i});
+    }
+    await batch.commit();
+  }
+
   double get totalStockKg => stock.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+
+  // ---- Tel Çekme (hammaddeyi üretime hazırlama) ----
+  Future<String?> addWiredraw({
+    required String date, required String operator, required String shift,
+    required String stockId, required double kg, String note = '',
+  }) async {
+    final idx = stock.indexWhere((s) => s['id'] == stockId);
+    if (idx == -1) return 'Seçilen hammadde stokta bulunamadı.';
+    final s = stock[idx];
+    await _db.collection('wiredraw').add({
+      'date': date, 'operator': operator, 'shift': shift, 'stockId': stockId,
+      'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': kg, 'note': note,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    await updateStockKg(stockId, (s['kg'] as num).toDouble() - kg);
+    return null;
+  }
+
+  Future<void> deleteWiredraw(String id) async {
+    final rec = wiredraw.firstWhere((w) => w['id'] == id, orElse: () => {});
+    final stockId = rec['stockId'] as String?;
+    if (stockId != null) {
+      final idx = stock.indexWhere((s) => s['id'] == stockId);
+      if (idx != -1) {
+        final cur = (stock[idx]['kg'] as num).toDouble();
+        await updateStockKg(stockId, cur + (rec['kg'] as num).toDouble());
+      }
+    }
+    await _db.collection('wiredraw').doc(id).delete();
+  }
+
+  List<Map<String, dynamic>> wiredrawForDate(String date) => wiredraw.where((w) => w['date'] == date).toList();
 
   // ---- Ürün bazlı sayaç sıfırlama ----
   Future<void> resetProductTotal(String productName) =>
@@ -263,9 +354,12 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int index = 0;
+  bool _wasAdmin = false;
   @override
   Widget build(BuildContext context) {
     final isAdmin = appState.isAdmin;
+    if (isAdmin && !_wasAdmin) index = 0;
+    _wasAdmin = isAdmin;
     final pages = [
       const DashboardPage(),
       if (isAdmin) const EntryPage(),
@@ -323,6 +417,18 @@ String displayMachine(String m) {
 String fmtCap(num c) {
   final isWhole = c % 1 == 0;
   return isWhole ? '${c.toInt()} mm' : '${c.toString().replaceAll('.', ',')} mm';
+}
+
+Future<void> confirmDeleteWiredraw(BuildContext context, Map<String, dynamic> w) async {
+  final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+    title: const Text('Tel Çekme Kaydını Sil'),
+    content: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']} • ${(w['kg'] as num).toStringAsFixed(0)} kg silinsin mi? Bu miktar hammadde stokuna geri eklenecek.'),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sil')),
+    ],
+  ));
+  if (ok == true) await appState.deleteWiredraw(w['id']);
 }
 
 List<Map<String, dynamic>> sortedRecords(List<Map<String, dynamic>> list) {
@@ -442,6 +548,17 @@ class DashboardPage extends StatelessWidget {
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status'], textAlign: TextAlign.end),
       ))),
+      const SizedBox(height: 18),
+      Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      if (appState.wiredrawForDate(today).isEmpty)
+        const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bugün henüz tel çekme kaydı yok.'))),
+      ...appState.wiredrawForDate(today).map((w) => Card(child: ListTile(
+        onTap: appState.isAdmin ? () => confirmDeleteWiredraw(context, w) : null,
+        title: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']}'),
+        subtitle: Text('${w['shift']} • ${w['operator']}'),
+        trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+      ))),
     ]));
   }
   Widget _stat(String t, int n, Color c) => Card(child: Padding(padding: const EdgeInsets.symmetric(vertical: 14), child: Column(children: [
@@ -458,11 +575,14 @@ class EntryPage extends StatefulWidget {
 }
 
 class _EntryPageState extends State<EntryPage> {
+  String entryMode = 'uretim';
   String machine = 'Makine 1', operator = '', shift = 'Gündüz', status = 'Üretimde';
   String? productId;
+  String? stockId;
   DateTime selectedDate = DateTime.now();
   final qty = TextEditingController();
   final note = TextEditingController();
+  final wireKg = TextEditingController();
   bool saving = false;
 
   Future<void> pickDate() async {
@@ -482,31 +602,57 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   Future<void> save() async {
-    final list = availableProducts;
-    if (list.isEmpty) return;
-    final p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
-    final gram = (p['gram'] as num).toDouble();
-    final q = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
-    if (status == 'Üretimde' && q <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim adedini girin.')));
-      return;
-    }
     if (operator.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Operatör seçin.')));
       return;
     }
-    final kg = status == 'Üretimde' ? q * gram / 1000 : 0;
-    setState(() => saving = true);
-    try {
-      await appState.add({
-        'date': dateStr(selectedDate), 'machine': machine, 'product': p['name'], 'gram': gram,
-        'operator': operator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim()
-      });
-      qty.clear(); note.clear();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim kaydı kaydedildi.')));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
-    } finally {
+    if (entryMode == 'uretim') {
+      final list = availableProducts;
+      if (list.isEmpty) return;
+      final p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
+      final gram = (p['gram'] as num).toDouble();
+      final q = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
+      if (status == 'Üretimde' && q <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim adedini girin.')));
+        return;
+      }
+      final kg = status == 'Üretimde' ? q * gram / 1000 : 0;
+      setState(() => saving = true);
+      try {
+        await appState.add({
+          'date': dateStr(selectedDate), 'machine': machine, 'product': p['name'], 'gram': gram,
+          'operator': operator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim()
+        });
+        qty.clear(); note.clear();
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim kaydı kaydedildi.')));
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
+      } finally {
+        if (mounted) setState(() => saving = false);
+      }
+    } else {
+      if (appState.stock.isEmpty || stockId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Önce Stok bölümünden hammadde ekleyin.')));
+        return;
+      }
+      final k = double.tryParse(wireKg.text.replaceAll(',', '.'));
+      if (k == null || k <= 0) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Hazırlanan miktarı (kg) girin.')));
+        return;
+      }
+      setState(() => saving = true);
+      final err = await appState.addWiredraw(
+        date: dateStr(selectedDate), operator: operator, shift: shift,
+        stockId: stockId!, kg: k, note: note.text.trim(),
+      );
+      if (mounted) {
+        if (err != null) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
+        } else {
+          wireKg.clear(); note.clear();
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Tel çekme kaydedildi, stok güncellendi.')));
+        }
+      }
       if (mounted) setState(() => saving = false);
     }
   }
@@ -516,6 +662,7 @@ class _EntryPageState extends State<EntryPage> {
     final list = availableProducts;
     if (list.isNotEmpty && !list.any((p) => p['id'] == productId)) productId = list.first['id'];
     if (operator.isEmpty && appState.operators.isNotEmpty) operator = appState.operators.first['name'];
+    if (appState.stock.isNotEmpty && !appState.stock.any((s) => s['id'] == stockId)) stockId = appState.stock.first['id'];
     final gram = list.isEmpty ? 0.0 : (list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['gram'] as num).toDouble();
     final qn = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
 
@@ -523,36 +670,64 @@ class _EntryPageState extends State<EntryPage> {
       const Logo(height: 52), const SizedBox(height: 10),
       Text('Üretim Girişi', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 16),
+      Row(children: [
+        Expanded(child: ChoiceChip(
+          label: const Text('Zincir Üretimi'), selected: entryMode == 'uretim',
+          onSelected: (_) => setState(() => entryMode = 'uretim'),
+        )),
+        const SizedBox(width: 8),
+        Expanded(child: ChoiceChip(
+          label: const Text('Tel Çekme'), selected: entryMode == 'telcekme',
+          onSelected: (_) => setState(() => entryMode = 'telcekme'),
+        )),
+      ]),
+      const SizedBox(height: 12),
       Card(child: ListTile(
         leading: const Icon(Icons.event),
-        title: const Text('Üretim Tarihi'),
+        title: const Text('Tarih'),
         subtitle: Text('${selectedDate.day.toString().padLeft(2, '0')}.${selectedDate.month.toString().padLeft(2, '0')}.${selectedDate.year}'),
         trailing: TextButton(onPressed: pickDate, child: const Text('Değiştir')),
       )),
       const SizedBox(height: 10),
-      _dd('Makine / Bölüm', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
-      if (list.isEmpty)
-        const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
-      else
-        _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
-            labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
-      if (list.isNotEmpty) Card(child: ListTile(title: const Text('Gramaj'), subtitle: Text('${gram.toStringAsFixed(2)} g / bakla'), leading: const Icon(Icons.scale_outlined))),
+      if (entryMode == 'uretim') ...[
+        _dd('Makine / Bölüm', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
+        if (list.isEmpty)
+          const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
+        else
+          _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
+              labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
+        if (list.isNotEmpty) Card(child: ListTile(title: const Text('Gramaj'), subtitle: Text('${gram.toStringAsFixed(2)} g / bakla'), leading: const Icon(Icons.scale_outlined))),
+      ] else ...[
+        if (appState.stock.isEmpty)
+          const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Henüz stok kalemi yok. Önce Stok bölümünden ekleyin.', style: TextStyle(color: Colors.red)))
+        else
+          _dd('Hazırlanan Hammadde', stockId!, appState.stock.map((s) => s['id'] as String).toList(), (v) => setState(() => stockId = v),
+              labelOf: (id) {
+                final s = appState.stock.firstWhere((s) => s['id'] == id);
+                return '${fmtCap(s['cap'] as num)} • ${s['malzeme']} (mevcut: ${fmtKg((s['kg'] as num).toDouble())} kg)';
+              }),
+      ],
       _dd('Vardiya', shift, shifts, (v) => setState(() => shift = v!)),
       if (appState.operators.isEmpty)
         const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Operatör tanımlı değil. Önce Yönetim > Operatör Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
       else
         _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
-      _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
-      if (status == 'Üretimde') ...[
-        TextField(controller: qty, keyboardType: TextInputType.number, onChanged: (_) => setState(() {}),
-            decoration: const InputDecoration(labelText: 'Üretilen bakla adedi', border: OutlineInputBorder())),
-        const SizedBox(height: 10),
-        if (qn > 0) Card(child: ListTile(title: const Text('Otomatik hesap'), subtitle: Text('${fmtKg(qn * gram / 1000)} kg  •  ${fmtTon(qn * gram / 1000)} ton'))),
-      ],
+      if (entryMode == 'uretim') ...[
+        _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
+        if (status == 'Üretimde') ...[
+          TextField(controller: qty, keyboardType: TextInputType.number, onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(labelText: 'Üretilen bakla adedi', border: OutlineInputBorder())),
+          const SizedBox(height: 10),
+          if (qn > 0) Card(child: ListTile(title: const Text('Otomatik hesap'), subtitle: Text('${fmtKg(qn * gram / 1000)} kg  •  ${fmtTon(qn * gram / 1000)} ton'))),
+        ],
+      ] else
+        TextField(controller: wireKg, keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Hazırlanan miktar (kg)', border: OutlineInputBorder())),
+      const SizedBox(height: 10),
       TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Not (isteğe bağlı)', border: OutlineInputBorder())),
       const SizedBox(height: 16),
       FilledButton.icon(
-        onPressed: saving || list.isEmpty || appState.operators.isEmpty ? null : save,
+        onPressed: saving || appState.operators.isEmpty || (entryMode == 'uretim' ? list.isEmpty : appState.stock.isEmpty) ? null : save,
         icon: const Icon(Icons.save),
         label: Padding(padding: const EdgeInsets.all(12), child: Text(saving ? 'KAYDEDİLİYOR...' : 'KAYDET')),
       ),
@@ -747,6 +922,10 @@ class _CalendarPageState extends State<CalendarPage> {
     final date = dateStr(selected);
     final list = sortedRecords(appState.recordsForDate(date));
     final totalKg = list.where((r) => r['status'] == 'Üretimde').fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+    final monthKg = appState.records.where((r) {
+      final d = DateTime.tryParse(r['date'] as String);
+      return d != null && d.year == selected.year && d.month == selected.month && r['status'] == 'Üretimde';
+    }).fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
       Text('Takvim', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
@@ -762,12 +941,29 @@ class _CalendarPageState extends State<CalendarPage> {
         Text('${fmtKg(totalKg)} kg  •  ${fmtTon(totalKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
       ]))),
       const SizedBox(height: 12),
+      Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('${turkishMonths[selected.month - 1]} ${selected.year} Aylık Toplam Üretim', style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text('${fmtKg(monthKg)} kg  •  ${fmtTon(monthKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+      ]))),
+      const SizedBox(height: 12),
       if (list.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte kayıt bulunmuyor.')),
       ...list.map((r) => Card(child: ListTile(
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
+      ))),
+      const SizedBox(height: 18),
+      Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      if (appState.wiredrawForDate(date).isEmpty)
+        const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte tel çekme kaydı yok.')),
+      ...appState.wiredrawForDate(date).map((w) => Card(child: ListTile(
+        onTap: appState.isAdmin ? () => confirmDeleteWiredraw(context, w) : null,
+        title: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']}'),
+        subtitle: Text('${w['shift']} • ${w['operator']}'),
+        trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
     ]));
   }
@@ -851,16 +1047,39 @@ class _StockPageState extends State<StockPage> {
       ]))),
       const SizedBox(height: 12),
       if (appState.stock.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Henüz hammadde stok kaydı yok.')),
-      ...appState.stock.map((s) => Card(child: ListTile(
-        title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-          if (appState.isAdmin) ...[
-            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
-            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
-          ],
-        ]),
-      ))),
+      if (appState.stock.isNotEmpty && appState.isAdmin) ...[
+        Text('Sırayı değiştirmek için bir kalemi basılı tutup sürükleyin. Üstteki kalemler en önemli / aktif kullanılanlar olsun.',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        const SizedBox(height: 8),
+        ReorderableListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: appState.stock.length,
+          onReorder: (oldIndex, newIndex) {
+            if (newIndex > oldIndex) newIndex -= 1;
+            final ids = appState.stock.map((s) => s['id'] as String).toList();
+            final id = ids.removeAt(oldIndex);
+            ids.insert(newIndex, id);
+            appState.reorderStock(ids);
+          },
+          itemBuilder: (context, i) {
+            final s = appState.stock[i];
+            return Card(key: ValueKey(s['id']), child: ListTile(
+              title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+                IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
+                IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
+                const Icon(Icons.drag_handle, color: Colors.grey),
+              ]),
+            ));
+          },
+        ),
+      ] else
+        ...appState.stock.map((s) => Card(child: ListTile(
+          title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
+          trailing: Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+        ))),
     ]));
   }
 }
@@ -893,34 +1112,74 @@ class _ReportsPageState extends State<ReportsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final names = appState.products.map((p) => p['name'] as String).where((n) => n.toLowerCase().contains(query.toLowerCase())).toList();
+    final all = [...appState.products];
+    all.sort((a, b) {
+      final aActive = appState.isProductActiveToday(a['name'] as String);
+      final bActive = appState.isProductActiveToday(b['name'] as String);
+      if (aActive != bActive) return aActive ? -1 : 1;
+      final oa = (a['order'] as num?)?.toInt() ?? 0;
+      final ob = (b['order'] as num?)?.toInt() ?? 0;
+      return oa.compareTo(ob);
+    });
+    final filtered = all.where((p) => (p['name'] as String).toLowerCase().contains(query.toLowerCase())).toList();
+    final canDrag = appState.isAdmin && query.isEmpty;
+
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
       Text('Ürün Üretim Raporu', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 12),
       TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder())),
       const SizedBox(height: 12),
-      ...names.map((name) {
-        final kg = appState.totalKgForProduct(name);
-        final d = appState.firstDateForProduct(name);
-        final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
-        final qty = gram == 0 ? 0 : kg * 1000 / gram;
-        final resetD = appState.productResetDates[name];
-        return Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: ListTile(
-          title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-          subtitle: Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}\nToplam bakla: ${qty.toStringAsFixed(0)}'
-              '${resetD != null ? '\n${fmtDate(resetD)} tarihinden itibaren' : ''}'),
-          isThreeLine: true,
-          trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-            Text('${fmtTon(kg)} ton'),
-            const SizedBox(height: 4),
-            if (appState.isAdmin)
-              InkWell(onTap: () => confirmReset(name), child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red))),
-          ]),
-        )));
-      })
+      Text('Bugün üretimde olan ürünler otomatik olarak en üstte gösterilir.'
+          '${canDrag ? ' Sırayı değiştirmek için bir kartı basılı tutup sürükleyin.' : ''}',
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+      const SizedBox(height: 8),
+      if (canDrag)
+        ReorderableListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: filtered.length,
+          onReorder: (oldIndex, newIndex) {
+            if (newIndex > oldIndex) newIndex -= 1;
+            final ids = filtered.map((p) => p['id'] as String).toList();
+            final id = ids.removeAt(oldIndex);
+            ids.insert(newIndex, id);
+            appState.reorderProducts(ids);
+          },
+          itemBuilder: (context, i) => KeyedSubtree(
+            key: ValueKey(filtered[i]['id']),
+            child: _productCard(filtered[i]['name'] as String, dragHandle: true),
+          ),
+        )
+      else
+        ...filtered.map((p) => _productCard(p['name'] as String, dragHandle: false)),
     ]));
+  }
+
+  Widget _productCard(String name, {required bool dragHandle}) {
+    final kg = appState.totalKgForProduct(name);
+    final d = appState.firstDateForProduct(name);
+    final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
+    final qty = gram == 0 ? 0 : kg * 1000 / gram;
+    final resetD = appState.productResetDates[name];
+    final active = appState.isProductActiveToday(name);
+    return Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: ListTile(
+      leading: active ? const Icon(Icons.play_circle_fill, color: Colors.green) : null,
+      title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}\nToplam bakla: ${qty.toStringAsFixed(0)}'
+          '${resetD != null ? '\n${fmtDate(resetD)} tarihinden itibaren' : ''}'),
+      isThreeLine: true,
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+        Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text('${fmtTon(kg)} ton'),
+          const SizedBox(height: 4),
+          if (appState.isAdmin)
+            InkWell(onTap: () => confirmReset(name), child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red))),
+        ]),
+        if (dragHandle) const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
+      ]),
+    )));
   }
 }
 
