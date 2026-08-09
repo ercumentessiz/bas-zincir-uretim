@@ -299,10 +299,13 @@ class AppState extends ChangeNotifier {
     'productAdjustments.$productName': 0,
   }, SetOptions(merge: true));
 
-  Future<void> adjustProductTotal(String productName, double subtractKg) =>
-      _db.collection('meta').doc('settings').set({
-        'productAdjustments.$productName': FieldValue.increment(-subtractKg),
-      }, SetOptions(merge: true));
+  Future<void> adjustProductTotal(String productName, double subtractKg) {
+    final current = (productAdjustments[productName] as num?)?.toDouble() ?? 0.0;
+    final next = current - subtractKg;
+    return _db.collection('meta').doc('settings').set({
+      'productAdjustments.$productName': next,
+    }, SetOptions(merge: true));
+  }
 
   bool _afterReset(String product, String date) {
     final r = productResetDates[product];
@@ -1232,8 +1235,12 @@ class _ReportsPageState extends State<ReportsPage> {
       ],
     ));
     if (result != null && result > 0) {
-      await appState.adjustProductTotal(name, result);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" toplamından ${fmtKg(result)} kg düşüldü.')));
+      try {
+        await appState.adjustProductTotal(name, result);
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" toplamından ${fmtKg(result)} kg düşüldü.')));
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
+      }
     }
   }
 
