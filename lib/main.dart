@@ -9,8 +9,8 @@ import 'stock_seed.dart';
 
 const defaultOperatorNames = [
   'Ekrem Ünal', 'Ozan Tüzün', 'Emircan Akyar', 'Mehmet Kavrık',
-  'Süleyman Ak', 'Mehmet Güre', 'Tuncay Üstünel', 'Hüseyin Yurttaş', 'Alper Yiğit',
-  'Çağlar Babacan', 'Oğuzhan Sarıkaya', 'Hüseyin Bıyık'
+  'Süleyman Ak', 'Mehmet Güre', 'Tuncay Üstünel', 'Hüseyin Yurttaş',
+  'Oğuzhan Sarıkaya', 'Hüseyin Bıyık'
 ];
 
 const shifts = ['Gündüz', 'Gece'];
@@ -133,7 +133,7 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
 
-    _db.collection('machines').orderBy('order').snapshots().listen((snap) async {
+    _db.collection('machines').snapshots().listen((snap) async {
       if (snap.docs.isEmpty && !_seededMachines) {
         _seededMachines = true;
         final batch = _db.batch();
@@ -143,11 +143,13 @@ class AppState extends ChangeNotifier {
         await batch.commit();
         return;
       }
-      machines = snap.docs.map((d) {
+      final list = snap.docs.map((d) {
         final m = Map<String, dynamic>.from(d.data());
         m['id'] = d.id;
         return m;
       }).toList();
+      list.sort((a, b) => compareMachineNames(a['name'] as String, b['name'] as String));
+      machines = list;
       notifyListeners();
     });
 
@@ -216,7 +218,15 @@ class AppState extends ChangeNotifier {
 
   Future<void> reorderProducts(List<String> orderedIds) async {
     final map = {for (final p in products) p['id'] as String: p};
-    products = orderedIds.where((id) => map.containsKey(id)).map((id) => map[id]!).toList();
+    final newList = <Map<String, dynamic>>[];
+    for (var i = 0; i < orderedIds.length; i++) {
+      final id = orderedIds[i];
+      if (!map.containsKey(id)) continue;
+      final item = Map<String, dynamic>.from(map[id]!);
+      item['order'] = i;
+      newList.add(item);
+    }
+    products = newList;
     notifyListeners();
     final batch = _db.batch();
     for (var i = 0; i < orderedIds.length; i++) {
@@ -235,10 +245,7 @@ class AppState extends ChangeNotifier {
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
 
   // ---- Makinalar ----
-  Future<void> addMachine(String name) async {
-    final nextOrder = machines.isEmpty ? 0 : machines.map((m) => (m['order'] as num).toInt()).reduce((a, b) => a > b ? a : b) + 1;
-    await _db.collection('machines').add({'name': name, 'order': nextOrder});
-  }
+  Future<void> addMachine(String name) => _db.collection('machines').add({'name': name});
   Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
 
   // ---- Hammadde Stoku ----
@@ -465,6 +472,25 @@ double productSizeKey(String name) {
   final match = RegExp(r'^(\d+(?:[.,]\d+)?)').firstMatch(name.trim());
   if (match == null) return double.infinity;
   return double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? double.infinity;
+}
+
+/// Makinaları önce "Makine N" olanlar numara sırasına göre, sonra diğerleri
+/// (Spanzet vb.) kendi içindeki numaraya göre sıralar. Yeni eklenen bir
+/// makina her zaman doğru sayısal konuma yerleşir, listenin sonuna düşmez.
+List<Object> machineSortKey(String name) {
+  final m = RegExp(r'^Makine (\d+)$').firstMatch(name);
+  if (m != null) return [0, double.parse(m.group(1)!)];
+  final m2 = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(name);
+  final val = m2 != null ? (double.tryParse(m2.group(1)!.replaceAll(',', '.')) ?? double.infinity) : double.infinity;
+  return [1, val];
+}
+
+int compareMachineNames(String a, String b) {
+  final ka = machineSortKey(a);
+  final kb = machineSortKey(b);
+  final tierCompare = (ka[0] as int).compareTo(kb[0] as int);
+  if (tierCompare != 0) return tierCompare;
+  return (ka[1] as double).compareTo(kb[1] as double);
 }
 
 Future<void> confirmDeleteWiredraw(BuildContext context, Map<String, dynamic> w) async {
@@ -1224,6 +1250,7 @@ class _ReportsPageState extends State<ReportsPage> {
         ReorderableListView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
+          buildDefaultDragHandles: false,
           itemCount: filtered.length,
           onReorder: (oldIndex, newIndex) {
             if (newIndex > oldIndex) newIndex -= 1;
@@ -1234,7 +1261,7 @@ class _ReportsPageState extends State<ReportsPage> {
           },
           itemBuilder: (context, i) => KeyedSubtree(
             key: ValueKey(filtered[i]['id']),
-            child: _productCard(filtered[i]['name'] as String, dragHandle: true),
+            child: _productCard(filtered[i]['name'] as String, dragHandle: true, dragIndex: i),
           ),
         )
       else
@@ -1242,7 +1269,7 @@ class _ReportsPageState extends State<ReportsPage> {
     ]));
   }
 
-  Widget _productCard(String name, {required bool dragHandle}) {
+  Widget _productCard(String name, {required bool dragHandle, int? dragIndex}) {
     final kg = appState.totalKgForProduct(name);
     final d = appState.firstDateForProduct(name);
     final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
@@ -1266,7 +1293,11 @@ class _ReportsPageState extends State<ReportsPage> {
             InkWell(onTap: () => adjustDialog(name), child: const Text('Manuel Düş', style: TextStyle(fontSize: 12, color: Colors.blue))),
           ],
         ]),
-        if (dragHandle) const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
+        if (dragHandle && dragIndex != null)
+          ReorderableDragStartListener(
+            index: dragIndex,
+            child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
+          ),
       ]),
     )));
   }
