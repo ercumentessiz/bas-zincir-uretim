@@ -9,8 +9,8 @@ import 'stock_seed.dart';
 
 const defaultOperatorNames = [
   'Ekrem Ünal', 'Ozan Tüzün', 'Emircan Akyar', 'Mehmet Kavrık',
-  'Süleyman Ak', 'Mehmet Güre', 'Tuncay Üstünel', 'Hüseyin Yurttaş',
-  'Oğuzhan Sarıkaya', 'Hüseyin Bıyık'
+  'Süleyman Ak', 'Mehmet Güre', 'Tuncay Üstünel', 'Hüseyin Yurttaş', 'Alper Yiğit',
+  'Çağlar Babacan', 'Oğuzhan Sarıkaya', 'Hüseyin Bıyık'
 ];
 
 const shifts = ['Gündüz', 'Gece'];
@@ -34,14 +34,13 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> stock = [];
   List<Map<String, dynamic>> wiredraw = [];
   Map<String, String> productResetDates = {};
+  Map<String, dynamic> productAdjustments = {};
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
-  bool _migratedProductOrder = false;
   bool _seededOperators = false;
   bool _seededMachines = false;
   bool _seededStock = false;
-  bool _migratedStockOrder = false;
 
   void init() {
     FirebaseAuth.instance.authStateChanges().listen((u) {
@@ -59,46 +58,54 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }, onError: (_) { loading = false; notifyListeners(); });
 
-    _db.collection('products').snapshots().listen((snap) async {
-      if (snap.docs.isEmpty && !_seededProducts) {
-        _seededProducts = true;
-        final batch = _db.batch();
-        for (var i = 0; i < seed.products.length; i++) {
-          final p = seed.products[i];
-          batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram'], 'order': i});
+    () async {
+      bool orderFixDone = false;
+      try {
+        final d = await _db.collection('meta').doc('productOrderFix').get();
+        orderFixDone = d.data()?['done'] == true;
+      } catch (_) {}
+
+      _db.collection('products').snapshots().listen((snap) async {
+        if (snap.docs.isEmpty && !_seededProducts) {
+          _seededProducts = true;
+          final batch = _db.batch();
+          final sortedSeed = [...seed.products]
+            ..sort((a, b) => productSizeKey(a['name'] as String).compareTo(productSizeKey(b['name'] as String)));
+          for (var i = 0; i < sortedSeed.length; i++) {
+            final p = sortedSeed[i];
+            batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram'], 'order': i});
+          }
+          await batch.commit();
+          return;
         }
-        await batch.commit();
-        return;
-      }
-      final list = snap.docs.map((d) {
-        final m = Map<String, dynamic>.from(d.data());
-        m['id'] = d.id;
-        return m;
-      }).toList();
-      final missingOrder = list.where((p) => p['order'] == null).toList();
-      if (missingOrder.isNotEmpty && !_migratedProductOrder) {
-        _migratedProductOrder = true;
-        missingOrder.sort((a, b) => (a['name'] as String).compareTo(b['name'] as String));
-        final maxExisting = list.where((p) => p['order'] != null)
-            .map((p) => (p['order'] as num).toInt()).fold(-1, (m, v) => v > m ? v : m);
-        final batch = _db.batch();
-        for (var i = 0; i < missingOrder.length; i++) {
-          batch.update(_db.collection('products').doc(missingOrder[i]['id'] as String), {'order': maxExisting + 1 + i});
+        final list = snap.docs.map((d) {
+          final m = Map<String, dynamic>.from(d.data());
+          m['id'] = d.id;
+          return m;
+        }).toList();
+
+        if (!orderFixDone) {
+          orderFixDone = true;
+          final sorted = [...list]
+            ..sort((a, b) => productSizeKey(a['name'] as String).compareTo(productSizeKey(b['name'] as String)));
+          final batch = _db.batch();
+          for (var i = 0; i < sorted.length; i++) {
+            batch.update(_db.collection('products').doc(sorted[i]['id'] as String), {'order': i});
+          }
+          batch.set(_db.collection('meta').doc('productOrderFix'), {'done': true});
+          await batch.commit();
+          return;
         }
-        await batch.commit();
-        return;
-      }
-      list.sort((a, b) {
-        final oa = (a['order'] as num?)?.toInt();
-        final ob = (b['order'] as num?)?.toInt();
-        if (oa != null && ob != null) return oa.compareTo(ob);
-        if (oa != null) return -1;
-        if (ob != null) return 1;
-        return (a['name'] as String).compareTo(b['name'] as String);
+
+        list.sort((a, b) {
+          final oa = (a['order'] as num?)?.toInt() ?? 0;
+          final ob = (b['order'] as num?)?.toInt() ?? 0;
+          return oa.compareTo(ob);
+        });
+        products = list;
+        notifyListeners();
       });
-      products = list;
-      notifyListeners();
-    });
+    }();
 
     _db.collection('operators').orderBy('name').snapshots().listen((snap) async {
       if (snap.docs.isEmpty && !_seededOperators) {
@@ -121,6 +128,8 @@ class AppState extends ChangeNotifier {
     _db.collection('meta').doc('settings').snapshots().listen((doc) {
       final raw = doc.data()?['productResetDates'];
       productResetDates = raw == null ? {} : Map<String, String>.from(raw as Map);
+      final rawAdj = doc.data()?['productAdjustments'];
+      productAdjustments = rawAdj == null ? {} : Map<String, dynamic>.from(rawAdj as Map);
       notifyListeners();
     });
 
@@ -146,9 +155,8 @@ class AppState extends ChangeNotifier {
       if (snap.docs.isEmpty && !_seededStock) {
         _seededStock = true;
         final batch = _db.batch();
-        for (var i = 0; i < stockSeed.length; i++) {
-          final s = stockSeed[i];
-          batch.set(_db.collection('stock').doc(), {'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': s['kg'], 'order': i});
+        for (final s in stockSeed) {
+          batch.set(_db.collection('stock').doc(), {'cap': s['cap'], 'malzeme': s['malzeme'], 'kg': s['kg']});
         }
         await batch.commit();
         return;
@@ -158,29 +166,7 @@ class AppState extends ChangeNotifier {
         m['id'] = d.id;
         return m;
       }).toList();
-      final missingOrder = list.where((s) => s['order'] == null).toList();
-      if (missingOrder.isNotEmpty && !_migratedStockOrder) {
-        _migratedStockOrder = true;
-        missingOrder.sort((a, b) {
-          final c = (a['cap'] as num).compareTo(b['cap'] as num);
-          if (c != 0) return c;
-          return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
-        });
-        final maxExisting = list.where((s) => s['order'] != null)
-            .map((s) => (s['order'] as num).toInt()).fold(-1, (m, v) => v > m ? v : m);
-        final batch = _db.batch();
-        for (var i = 0; i < missingOrder.length; i++) {
-          batch.update(_db.collection('stock').doc(missingOrder[i]['id'] as String), {'order': maxExisting + 1 + i});
-        }
-        await batch.commit();
-        return;
-      }
       list.sort((a, b) {
-        final oa = (a['order'] as num?)?.toInt();
-        final ob = (b['order'] as num?)?.toInt();
-        if (oa != null && ob != null) return oa.compareTo(ob);
-        if (oa != null) return -1;
-        if (ob != null) return 1;
         final c = (a['cap'] as num).compareTo(b['cap'] as num);
         if (c != 0) return c;
         return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
@@ -240,7 +226,7 @@ class AppState extends ChangeNotifier {
   }
 
   bool isProductActiveToday(String name) {
-    final d = dateStr(businessReportDate());
+    final d = lastEntryDate();
     return records.any((r) => r['date'] == d && r['status'] == 'Üretimde' && r['product'] == name);
   }
 
@@ -256,23 +242,10 @@ class AppState extends ChangeNotifier {
   Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
 
   // ---- Hammadde Stoku ----
-  Future<void> addStock(double cap, String malzeme, double kg) async {
-    final nextOrder = stock.isEmpty ? 0 : stock.map((s) => (s['order'] as num?)?.toInt() ?? 0).reduce((a, b) => a > b ? a : b) + 1;
-    await _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg, 'order': nextOrder});
-  }
+  Future<void> addStock(double cap, String malzeme, double kg) =>
+      _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg});
   Future<void> updateStockKg(String id, double kg) => _db.collection('stock').doc(id).update({'kg': kg});
   Future<void> deleteStock(String id) => _db.collection('stock').doc(id).delete();
-
-  Future<void> reorderStock(List<String> orderedIds) async {
-    final map = {for (final s in stock) s['id'] as String: s};
-    stock = orderedIds.where((id) => map.containsKey(id)).map((id) => map[id]!).toList();
-    notifyListeners();
-    final batch = _db.batch();
-    for (var i = 0; i < orderedIds.length; i++) {
-      batch.update(_db.collection('stock').doc(orderedIds[i]), {'order': i});
-    }
-    await batch.commit();
-  }
 
   double get totalStockKg => stock.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
 
@@ -308,18 +281,30 @@ class AppState extends ChangeNotifier {
 
   List<Map<String, dynamic>> wiredrawForDate(String date) => wiredraw.where((w) => w['date'] == date).toList();
 
-  // ---- Ürün bazlı sayaç sıfırlama ----
-  Future<void> resetProductTotal(String productName) =>
-      _db.collection('meta').doc('settings').set({'productResetDates.$productName': dateNow()}, SetOptions(merge: true));
+  // ---- Ürün bazlı sayaç sıfırlama ve manuel düşüm ----
+  Future<void> resetProductTotal(String productName) => _db.collection('meta').doc('settings').set({
+    'productResetDates.$productName': dateNow(),
+    'productAdjustments.$productName': 0,
+  }, SetOptions(merge: true));
+
+  Future<void> adjustProductTotal(String productName, double subtractKg) =>
+      _db.collection('meta').doc('settings').set({
+        'productAdjustments.$productName': FieldValue.increment(-subtractKg),
+      }, SetOptions(merge: true));
 
   bool _afterReset(String product, String date) {
     final r = productResetDates[product];
     return r == null || date.compareTo(r) >= 0;
   }
 
-  double totalKgForProduct(String name) => records
-      .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
-      .fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+  double totalKgForProduct(String name) {
+    final produced = records
+        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
+        .fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+    final adj = (productAdjustments[name] as num?)?.toDouble() ?? 0.0;
+    final total = produced + adj;
+    return total < 0 ? 0 : total;
+  }
 
   DateTime? firstDateForProduct(String name) {
     final ds = records
@@ -432,20 +417,25 @@ String fmtTon(double v) => (v / 1000).toStringAsFixed(3).replaceAll('.', ',');
 String dateNow() => DateTime.now().toIso8601String().substring(0, 10);
 String dateStr(DateTime d) => d.toIso8601String().substring(0, 10);
 
-/// Özet ekranında gösterilecek "işletme günü". Üretim bir gün gecikmeli
-/// girildiği için normalde dün, ama Pazar/Pazartesi günleri Cuma gösterilir
-/// (hafta sonu çalışılmadığı için).
-DateTime businessReportDate() {
-  final now = DateTime.now();
-  if (now.weekday == DateTime.sunday) return now.subtract(const Duration(days: 2));
-  if (now.weekday == DateTime.monday) return now.subtract(const Duration(days: 3));
-  return now.subtract(const Duration(days: 1));
+const turkishWeekdays = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
+
+/// Özet ekranında gösterilecek gün: en son veri girişi yapılan tarih.
+/// Böylece hangi gün girilmemiş olursa olsun (hafta sonu, unutulan gün vb.)
+/// her zaman gerçek veriye göre doğru günü gösterir.
+String lastEntryDate() {
+  final dates = <String>{
+    ...appState.records.map((r) => r['date'] as String),
+    ...appState.wiredraw.map((w) => w['date'] as String),
+  };
+  if (dates.isEmpty) return dateNow();
+  final list = dates.toList()..sort();
+  return list.last;
 }
 
-String recordsSectionTitle() {
-  final now = DateTime.now();
-  if (now.weekday == DateTime.sunday || now.weekday == DateTime.monday) return 'Cuma Günkü Kayıtlar';
-  return 'Dünkü Kayıtlar';
+String recordsSectionTitle(String isoDate) {
+  final d = DateTime.tryParse(isoDate);
+  if (d == null) return 'Kayıtlar';
+  return '${turkishWeekdays[d.weekday - 1]} Gününe Ait Kayıtlar';
 }
 String fmtDate(String iso) {
   final p = iso.split('-');
@@ -470,6 +460,13 @@ String fmtCap(num c) {
   return isWhole ? '${c.toInt()} mm' : '${c.toString().replaceAll('.', ',')} mm';
 }
 
+/// Ürün adındaki ilk sayıyı (ör. "13x36 mm..." -> 13) sıralama anahtarı olarak döner.
+double productSizeKey(String name) {
+  final match = RegExp(r'^(\d+(?:[.,]\d+)?)').firstMatch(name.trim());
+  if (match == null) return double.infinity;
+  return double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? double.infinity;
+}
+
 Future<void> confirmDeleteWiredraw(BuildContext context, Map<String, dynamic> w) async {
   final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
     title: const Text('Tel Çekme Kaydını Sil'),
@@ -480,6 +477,18 @@ Future<void> confirmDeleteWiredraw(BuildContext context, Map<String, dynamic> w)
     ],
   ));
   if (ok == true) await appState.deleteWiredraw(w['id']);
+}
+
+Future<void> confirmDeleteRecord(BuildContext context, Map<String, dynamic> r) async {
+  final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+    title: const Text('Kaydı Sil'),
+    content: Text('${displayMachine(r['machine'])} • ${r['product'] ?? r['status']} kaydı kalıcı olarak silinecek. Emin misiniz?'),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+      FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sil')),
+    ],
+  ));
+  if (ok == true) await appState.deleteRecord(r['id']);
 }
 
 List<Map<String, dynamic>> sortedRecords(List<Map<String, dynamic>> list) {
@@ -560,8 +569,8 @@ class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
   @override
   Widget build(BuildContext context) {
-    final today = dateStr(businessReportDate());
-    final sectionTitle = recordsSectionTitle();
+    final today = lastEntryDate();
+    final sectionTitle = recordsSectionTitle(today);
     final todayRecords = sortedRecords(appState.recordsForDate(today));
     final active = todayRecords.where((r) => r['status'] == 'Üretimde').length;
     final setup = todayRecords.where((r) => r['status'] == 'Ayar Dönülüyor').length;
@@ -602,7 +611,12 @@ class DashboardPage extends StatelessWidget {
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
-        trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status'], textAlign: TextAlign.end),
+        trailing: appState.isAdmin
+            ? Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
+                IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDeleteRecord(context, r)),
+              ])
+            : Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status'], textAlign: TextAlign.end),
       ))),
       const SizedBox(height: 18),
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
@@ -1022,7 +1036,12 @@ class _CalendarPageState extends State<CalendarPage> {
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
-        trailing: Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
+        trailing: appState.isAdmin
+            ? Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
+                IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDeleteRecord(context, r)),
+              ])
+            : Text(r['status'] == 'Üretimde' ? '${fmtKg((r['kg'] as num).toDouble())} kg' : r['status']),
       ))),
       const SizedBox(height: 18),
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
@@ -1117,39 +1136,16 @@ class _StockPageState extends State<StockPage> {
       ]))),
       const SizedBox(height: 12),
       if (appState.stock.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Henüz hammadde stok kaydı yok.')),
-      if (appState.stock.isNotEmpty && appState.isAdmin) ...[
-        Text('Sırayı değiştirmek için bir kalemi basılı tutup sürükleyin. Üstteki kalemler en önemli / aktif kullanılanlar olsun.',
-            style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-        const SizedBox(height: 8),
-        ReorderableListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: appState.stock.length,
-          onReorder: (oldIndex, newIndex) {
-            if (newIndex > oldIndex) newIndex -= 1;
-            final ids = appState.stock.map((s) => s['id'] as String).toList();
-            final id = ids.removeAt(oldIndex);
-            ids.insert(newIndex, id);
-            appState.reorderStock(ids);
-          },
-          itemBuilder: (context, i) {
-            final s = appState.stock[i];
-            return Card(key: ValueKey(s['id']), child: ListTile(
-              title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
-              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-                IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
-                IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
-                const Icon(Icons.drag_handle, color: Colors.grey),
-              ]),
-            ));
-          },
-        ),
-      ] else
-        ...appState.stock.map((s) => Card(child: ListTile(
-          title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
-          trailing: Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-        ))),
+      ...appState.stock.map((s) => Card(child: ListTile(
+        title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (appState.isAdmin) ...[
+            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
+            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
+          ],
+        ]),
+      ))),
     ]));
   }
 }
@@ -1177,6 +1173,26 @@ class _ReportsPageState extends State<ReportsPage> {
     if (ok == true) {
       await appState.resetProductTotal(name);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" sıfırlandı.')));
+    }
+  }
+
+  Future<void> adjustDialog(String name) async {
+    final ctrl = TextEditingController();
+    final result = await showDialog<double>(context: context, builder: (_) => AlertDialog(
+      title: Text('$name'),
+      content: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Düşülecek miktar (kg) — örn. satılan', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () {
+          final v = double.tryParse(ctrl.text.replaceAll(',', '.'));
+          Navigator.pop(context, v);
+        }, child: const Text('Düş')),
+      ],
+    ));
+    if (result != null && result > 0) {
+      await appState.adjustProductTotal(name, result);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" toplamından ${fmtKg(result)} kg düşüldü.')));
     }
   }
 
@@ -1244,8 +1260,11 @@ class _ReportsPageState extends State<ReportsPage> {
           Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
           Text('${fmtTon(kg)} ton'),
           const SizedBox(height: 4),
-          if (appState.isAdmin)
+          if (appState.isAdmin) ...[
             InkWell(onTap: () => confirmReset(name), child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red))),
+            const SizedBox(height: 2),
+            InkWell(onTap: () => adjustDialog(name), child: const Text('Manuel Düş', style: TextStyle(fontSize: 12, color: Colors.blue))),
+          ],
         ]),
         if (dragHandle) const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
       ]),
