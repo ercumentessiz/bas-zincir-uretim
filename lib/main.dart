@@ -216,7 +216,7 @@ class AppState extends ChangeNotifier {
   }
   Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
 
-  Future<void> reorderProducts(List<String> orderedIds) async {
+  Future<String?> reorderProducts(List<String> orderedIds) async {
     final map = {for (final p in products) p['id'] as String: p};
     final newList = <Map<String, dynamic>>[];
     for (var i = 0; i < orderedIds.length; i++) {
@@ -228,11 +228,16 @@ class AppState extends ChangeNotifier {
     }
     products = newList;
     notifyListeners();
-    final batch = _db.batch();
-    for (var i = 0; i < orderedIds.length; i++) {
-      batch.update(_db.collection('products').doc(orderedIds[i]), {'order': i});
+    try {
+      final batch = _db.batch();
+      for (var i = 0; i < orderedIds.length; i++) {
+        batch.update(_db.collection('products').doc(orderedIds[i]), {'order': i});
+      }
+      await batch.commit();
+      return null;
+    } catch (e) {
+      return e.toString();
     }
-    await batch.commit();
   }
 
   bool isProductActiveToday(String name) {
@@ -456,10 +461,20 @@ int _machineIndex(String m) {
 }
 int _shiftOrder(String s) => s == 'Gündüz' ? 0 : (s == 'Gece' ? 1 : 2);
 
+/// "Makine 23" ya da "23. Makine" biçimlerinin her ikisini de tanıyıp
+/// makina numarasını çıkarır. Eşleşme yoksa null döner.
+int? extractMakineNumber(String name) {
+  final trimmed = name.trim();
+  final m1 = RegExp(r'^Makine (\d+)$').firstMatch(trimmed);
+  if (m1 != null) return int.parse(m1.group(1)!);
+  final m2 = RegExp(r'^(\d+)\.\s*Makine$').firstMatch(trimmed);
+  if (m2 != null) return int.parse(m2.group(1)!);
+  return null;
+}
+
 String displayMachine(String m) {
-  final match = RegExp(r'^Makine (\d+)$').firstMatch(m);
-  if (match != null) return '${match.group(1)}. Makine';
-  return m;
+  final n = extractMakineNumber(m);
+  return n != null ? '$n. Makine' : m;
 }
 
 String fmtCap(num c) {
@@ -478,8 +493,8 @@ double productSizeKey(String name) {
 /// (Spanzet vb.) kendi içindeki numaraya göre sıralar. Yeni eklenen bir
 /// makina her zaman doğru sayısal konuma yerleşir, listenin sonuna düşmez.
 List<Object> machineSortKey(String name) {
-  final m = RegExp(r'^Makine (\d+)$').firstMatch(name);
-  if (m != null) return [0, double.parse(m.group(1)!)];
+  final n = extractMakineNumber(name);
+  if (n != null) return [0, n.toDouble()];
   final m2 = RegExp(r'(\d+(?:[.,]\d+)?)').firstMatch(name);
   final val = m2 != null ? (double.tryParse(m2.group(1)!.replaceAll(',', '.')) ?? double.infinity) : double.infinity;
   return [1, val];
@@ -1252,12 +1267,15 @@ class _ReportsPageState extends State<ReportsPage> {
           physics: const NeverScrollableScrollPhysics(),
           buildDefaultDragHandles: false,
           itemCount: filtered.length,
-          onReorder: (oldIndex, newIndex) {
+          onReorder: (oldIndex, newIndex) async {
             if (newIndex > oldIndex) newIndex -= 1;
             final ids = filtered.map((p) => p['id'] as String).toList();
             final id = ids.removeAt(oldIndex);
             ids.insert(newIndex, id);
-            appState.reorderProducts(ids);
+            final err = await appState.reorderProducts(ids);
+            if (err != null && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sıralama kaydedilemedi: $err')));
+            }
           },
           itemBuilder: (context, i) => KeyedSubtree(
             key: ValueKey(filtered[i]['id']),
@@ -1276,30 +1294,41 @@ class _ReportsPageState extends State<ReportsPage> {
     final qty = gram == 0 ? 0 : kg * 1000 / gram;
     final resetD = appState.productResetDates[name];
     final active = appState.isProductActiveToday(name);
-    return Card(child: Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: ListTile(
-      leading: active ? const Icon(Icons.play_circle_fill, color: Colors.green) : null,
-      title: Text(name, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}\nToplam bakla: ${qty.toStringAsFixed(0)}'
-          '${resetD != null ? '\n${fmtDate(resetD)} tarihinden itibaren' : ''}'),
-      isThreeLine: true,
-      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-        Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-          Text('${fmtTon(kg)} ton'),
-          const SizedBox(height: 4),
+    return Card(child: Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (active) const Padding(padding: EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.play_circle_fill, color: Colors.green, size: 20)),
+          Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15))),
+          if (dragHandle && dragIndex != null)
+            ReorderableDragStartListener(
+              index: dragIndex,
+              child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
+            ),
+        ]),
+        const SizedBox(height: 6),
+        Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}   •   Toplam bakla: ${qty.toStringAsFixed(0)}'
+            '${resetD != null ? '\n${fmtDate(resetD)} tarihinden itibaren' : ''}',
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+        const SizedBox(height: 10),
+        Row(children: [
+          Text('${fmtKg(kg)} kg  •  ${fmtTon(kg)} ton', style: const TextStyle(fontWeight: FontWeight.bold)),
+          const Spacer(),
           if (appState.isAdmin) ...[
-            InkWell(onTap: () => confirmReset(name), child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red))),
-            const SizedBox(height: 2),
-            InkWell(onTap: () => adjustDialog(name), child: const Text('Manuel Düş', style: TextStyle(fontSize: 12, color: Colors.blue))),
+            TextButton(
+              onPressed: () => confirmReset(name),
+              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red)),
+            ),
+            TextButton(
+              onPressed: () => adjustDialog(name),
+              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              child: const Text('Manuel Düş', style: TextStyle(fontSize: 12, color: Colors.blue)),
+            ),
           ],
         ]),
-        if (dragHandle && dragIndex != null)
-          ReorderableDragStartListener(
-            index: dragIndex,
-            child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
-          ),
       ]),
-    )));
+    ));
   }
 }
 
@@ -1393,7 +1422,7 @@ class _MachinesManagePageState extends State<MachinesManagePage> {
       appBar: AppBar(title: const Text('Makina Yönetimi')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
         Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [
-          TextField(controller: name, decoration: const InputDecoration(labelText: 'Makina adı (örn. Makine 23)', border: OutlineInputBorder())),
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'Makina adı (örn. Makine 23 veya 23. Makine)', border: OutlineInputBorder())),
           const SizedBox(height: 10),
           SizedBox(width: double.infinity, child: FilledButton(onPressed: add, child: const Text('Makina Ekle'))),
         ]))),
