@@ -1251,6 +1251,18 @@ class _ReportsPageState extends State<ReportsPage> {
     }
   }
 
+  Future<void> moveProduct(List<Map<String, dynamic>> filtered, int index, int delta) async {
+    final newIndex = index + delta;
+    if (newIndex < 0 || newIndex >= filtered.length) return;
+    final ids = filtered.map((p) => p['id'] as String).toList();
+    final id = ids.removeAt(index);
+    ids.insert(newIndex, id);
+    final err = await appState.reorderProducts(ids);
+    if (err != null && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sıralama kaydedilemedi: $err')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final all = [...appState.products];
@@ -1260,7 +1272,7 @@ class _ReportsPageState extends State<ReportsPage> {
       return oa.compareTo(ob);
     });
     final filtered = all.where((p) => (p['name'] as String).toLowerCase().contains(query.toLowerCase())).toList();
-    final canDrag = appState.isAdmin && query.isEmpty;
+    final canReorder = appState.isAdmin && query.isEmpty;
 
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
@@ -1269,36 +1281,20 @@ class _ReportsPageState extends State<ReportsPage> {
       TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder())),
       const SizedBox(height: 12),
       Text('Aktif üretimdeki ürünler yeşil ikonla işaretlenir. Sıra tamamen elle belirlenir'
-          '${canDrag ? ' — bir kartı basılı tutup sürükleyerek istediğiniz sıraya taşıyabilirsiniz.' : '.'}',
+          '${canReorder ? ' — bir kartın sağındaki ok düğmeleriyle yukarı/aşağı taşıyabilirsiniz.' : '.'}',
           style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
       const SizedBox(height: 8),
-      if (canDrag)
-        ReorderableListView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          buildDefaultDragHandles: false,
-          itemCount: filtered.length,
-          onReorder: (oldIndex, newIndex) async {
-            if (newIndex > oldIndex) newIndex -= 1;
-            final ids = filtered.map((p) => p['id'] as String).toList();
-            final id = ids.removeAt(oldIndex);
-            ids.insert(newIndex, id);
-            final err = await appState.reorderProducts(ids);
-            if (err != null && mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Sıralama kaydedilemedi: $err')));
-            }
-          },
-          itemBuilder: (context, i) => KeyedSubtree(
-            key: ValueKey(filtered[i]['id']),
-            child: _productCard(filtered[i]['name'] as String, dragHandle: true, dragIndex: i),
-          ),
-        )
-      else
-        ...filtered.map((p) => _productCard(p['name'] as String, dragHandle: false)),
+      ...filtered.asMap().entries.map((e) => _productCard(
+            e.value['name'] as String,
+            canReorder: canReorder,
+            index: e.key,
+            total: filtered.length,
+            filtered: filtered,
+          )),
     ]));
   }
 
-  Widget _productCard(String name, {required bool dragHandle, int? dragIndex}) {
+  Widget _productCard(String name, {required bool canReorder, int? index, int? total, List<Map<String, dynamic>>? filtered}) {
     final kg = appState.totalKgForProduct(name);
     final d = appState.firstDateForProduct(name);
     final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
@@ -1311,11 +1307,23 @@ class _ReportsPageState extends State<ReportsPage> {
         Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
           if (active) const Padding(padding: EdgeInsets.only(right: 8, top: 2), child: Icon(Icons.play_circle_fill, color: Colors.green, size: 20)),
           Expanded(child: Text(name, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15))),
-          if (dragHandle && dragIndex != null)
-            ReorderableDragStartListener(
-              index: dragIndex,
-              child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.drag_handle, color: Colors.grey)),
-            ),
+          if (canReorder && index != null && total != null && filtered != null)
+            Column(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(
+                icon: const Icon(Icons.keyboard_arrow_up),
+                iconSize: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: index > 0 ? () => moveProduct(filtered, index, -1) : null,
+              ),
+              IconButton(
+                icon: const Icon(Icons.keyboard_arrow_down),
+                iconSize: 20,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: index < total - 1 ? () => moveProduct(filtered, index, 1) : null,
+              ),
+            ]),
         ]),
         const SizedBox(height: 6),
         Text('İlk üretim: ${d == null ? "—" : fmtDate(dateStr(d))}   •   Toplam bakla: ${qty.toStringAsFixed(0)}'
