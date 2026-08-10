@@ -294,15 +294,22 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> wiredrawForDate(String date) => wiredraw.where((w) => w['date'] == date).toList();
 
   // ---- Ürün bazlı sayaç sıfırlama ve manuel düşüm ----
-  Future<void> resetProductTotal(String productName) => _db.collection('meta').doc('settings').set({
-    'productResetDates.$productName': dateNow(),
-    'productAdjustments.$productName': 0,
-  }, SetOptions(merge: true));
+  Future<void> resetProductTotal(String productName) async {
+    productResetDates = {...productResetDates, productName: dateNow()};
+    productAdjustments = {...productAdjustments, productName: 0};
+    notifyListeners();
+    await _db.collection('meta').doc('settings').set({
+      'productResetDates.$productName': dateNow(),
+      'productAdjustments.$productName': 0,
+    }, SetOptions(merge: true));
+  }
 
-  Future<void> adjustProductTotal(String productName, double subtractKg) {
+  Future<void> adjustProductTotal(String productName, double subtractKg) async {
     final current = (productAdjustments[productName] as num?)?.toDouble() ?? 0.0;
     final next = current - subtractKg;
-    return _db.collection('meta').doc('settings').set({
+    productAdjustments = {...productAdjustments, productName: next};
+    notifyListeners();
+    await _db.collection('meta').doc('settings').set({
       'productAdjustments.$productName': next,
     }, SetOptions(merge: true));
   }
@@ -1248,9 +1255,6 @@ class _ReportsPageState extends State<ReportsPage> {
   Widget build(BuildContext context) {
     final all = [...appState.products];
     all.sort((a, b) {
-      final aActive = appState.isProductActiveToday(a['name'] as String);
-      final bActive = appState.isProductActiveToday(b['name'] as String);
-      if (aActive != bActive) return aActive ? -1 : 1;
       final oa = (a['order'] as num?)?.toInt() ?? 0;
       final ob = (b['order'] as num?)?.toInt() ?? 0;
       return oa.compareTo(ob);
@@ -1264,8 +1268,8 @@ class _ReportsPageState extends State<ReportsPage> {
       const SizedBox(height: 12),
       TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder())),
       const SizedBox(height: 12),
-      Text('Bugün üretimde olan ürünler otomatik olarak en üstte gösterilir.'
-          '${canDrag ? ' Sırayı değiştirmek için bir kartı basılı tutup sürükleyin.' : ''}',
+      Text('Aktif üretimdeki ürünler yeşil ikonla işaretlenir. Sıra tamamen elle belirlenir'
+          '${canDrag ? ' — bir kartı basılı tutup sürükleyerek istediğiniz sıraya taşıyabilirsiniz.' : '.'}',
           style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
       const SizedBox(height: 8),
       if (canDrag)
