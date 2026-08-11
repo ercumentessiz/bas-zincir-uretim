@@ -60,9 +60,14 @@ class AppState extends ChangeNotifier {
 
     () async {
       bool orderFixDone = false;
+      bool typeFixDone = false;
       try {
         final d = await _db.collection('meta').doc('productOrderFix').get();
         orderFixDone = d.data()?['done'] == true;
+      } catch (_) {}
+      try {
+        final d2 = await _db.collection('meta').doc('productTypeFix').get();
+        typeFixDone = d2.data()?['done'] == true;
       } catch (_) {}
 
       _db.collection('products').snapshots().listen((snap) async {
@@ -73,7 +78,8 @@ class AppState extends ChangeNotifier {
             ..sort((a, b) => productSizeKey(a['name'] as String).compareTo(productSizeKey(b['name'] as String)));
           for (var i = 0; i < sortedSeed.length; i++) {
             final p = sortedSeed[i];
-            batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram'], 'order': i});
+            final type = (p['name'] as String).contains('Spanzet') ? 'spanzet' : 'zincir';
+            batch.set(_db.collection('products').doc(), {'name': p['name'], 'gram': p['gram'], 'order': i, 'type': type});
           }
           await batch.commit();
           return;
@@ -95,6 +101,23 @@ class AppState extends ChangeNotifier {
           batch.set(_db.collection('meta').doc('productOrderFix'), {'done': true});
           await batch.commit();
           return;
+        }
+
+        if (!typeFixDone) {
+          typeFixDone = true;
+          final missingType = list.where((p) => p['type'] == null).toList();
+          if (missingType.isNotEmpty) {
+            final batch = _db.batch();
+            for (final p in missingType) {
+              final type = (p['name'] as String).contains('Spanzet') ? 'spanzet' : 'zincir';
+              batch.update(_db.collection('products').doc(p['id'] as String), {'type': type});
+            }
+            batch.set(_db.collection('meta').doc('productTypeFix'), {'done': true});
+            await batch.commit();
+            return;
+          } else {
+            await _db.collection('meta').doc('productTypeFix').set({'done': true});
+          }
         }
 
         list.sort((a, b) {
@@ -210,9 +233,21 @@ class AppState extends ChangeNotifier {
   Future<void> deleteRecord(String id) => _db.collection('records').doc(id).delete();
 
   // ---- Ürünler ----
-  Future<void> addProduct(String name, double gram) async {
-    final nextOrder = products.isEmpty ? 0 : products.map((p) => (p['order'] as num?)?.toInt() ?? 0).reduce((a, b) => a > b ? a : b) + 1;
-    await _db.collection('products').add({'name': name, 'gram': gram, 'order': nextOrder});
+  Future<void> addProduct(String name, double gram, String type) async {
+    final sorted = [...products]
+      ..sort((a, b) => ((a['order'] as num?)?.toInt() ?? 0).compareTo((b['order'] as num?)?.toInt() ?? 0));
+    final newSize = productSizeKey(name);
+    int insertAt = sorted.length;
+    for (var i = 0; i < sorted.length; i++) {
+      if (newSize < productSizeKey(sorted[i]['name'] as String)) { insertAt = i; break; }
+    }
+    final batch = _db.batch();
+    for (var i = insertAt; i < sorted.length; i++) {
+      batch.update(_db.collection('products').doc(sorted[i]['id'] as String), {'order': i + 1});
+    }
+    final newRef = _db.collection('products').doc();
+    batch.set(newRef, {'name': name, 'gram': gram, 'order': insertAt, 'type': type});
+    await batch.commit();
   }
   Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
 
@@ -348,6 +383,15 @@ class AppState extends ChangeNotifier {
 }
 
 final appState = AppState();
+
+/// Sayfaların appState değişikliklerini, sekme değiştirmeden, doğrudan ve
+/// güvenilir şekilde yakalaması için her sayfanın kendi dinleyicisi.
+class AppStateBuilder extends StatelessWidget {
+  final WidgetBuilder builder;
+  const AppStateBuilder({super.key, required this.builder});
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(animation: appState, builder: (context, _) => builder(context));
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -619,7 +663,7 @@ class _LoginPageState extends State<LoginPage> {
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final today = lastEntryDate();
     final sectionTitle = recordsSectionTitle(today);
     final todayRecords = sortedRecords(appState.recordsForDate(today));
@@ -681,7 +725,7 @@ class DashboardPage extends StatelessWidget {
         trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
     ]));
-  }
+  });
   Widget _stat(String t, int n, Color c) => Card(child: Padding(padding: const EdgeInsets.symmetric(vertical: 14), child: Column(children: [
     Text('$n', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: c)), Text(t, style: const TextStyle(fontSize: 12))
   ])));
@@ -716,10 +760,43 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   List<Map<String, dynamic>> get availableProducts {
-    final all = appState.products;
-    if (machine == '10 mm Spanzet') return all.where((p) => p['name'] == '10 mm Spanzet').toList();
-    if (machine == '12 mm Spanzet') return all.where((p) => p['name'] == '12 mm Spanzet').toList();
-    return all.where((p) => p['name'] != '10 mm Spanzet' && p['name'] != '12 mm Spanzet').toList();
+    final isSpanzetMachine = machine.toLowerCase().contains('spanzet');
+    return appState.products.where((p) => (p['type'] == 'spanzet') == isSpanzetMachine).toList();
+  }
+
+  Future<void> pickProduct() async {
+    final list = availableProducts;
+    String q = '';
+    final result = await showModalBottomSheet<String>(
+      context: context, isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheetState) {
+        final filtered = list.where((p) => (p['name'] as String).toLowerCase().contains(q.toLowerCase())).toList();
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.75,
+            child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+              Text('Ürün Seç', style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              TextField(autofocus: true, decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder()),
+                  onChanged: (v) => setSheetState(() => q = v)),
+              const SizedBox(height: 8),
+              Expanded(child: filtered.isEmpty
+                  ? const Center(child: Text('Sonuç bulunamadı.'))
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (_, i) => ListTile(
+                        title: Text(filtered[i]['name'] as String),
+                        subtitle: Text('${filtered[i]['gram']} g/bakla'),
+                        onTap: () => Navigator.pop(ctx, filtered[i]['id'] as String),
+                      ),
+                    )),
+            ])),
+          ),
+        );
+      }),
+    );
+    if (result != null) setState(() => productId = result);
   }
 
   Future<void> save() async {
@@ -784,7 +861,7 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final list = availableProducts;
     if (list.isNotEmpty && !list.any((p) => p['id'] == productId)) productId = list.first['id'];
     if (operator.isEmpty && appState.operators.isNotEmpty) operator = appState.operators.first['name'];
@@ -820,8 +897,12 @@ class _EntryPageState extends State<EntryPage> {
         if (list.isEmpty)
           const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
         else
-          _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
-              labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
+          Card(child: ListTile(
+            title: const Text('Ürün'),
+            subtitle: Text(list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['name'] as String),
+            trailing: const Icon(Icons.search),
+            onTap: pickProduct,
+          )),
         if (list.isNotEmpty) Card(child: ListTile(title: const Text('Gramaj'), subtitle: Text('${gram.toStringAsFixed(2)} g / bakla'), leading: const Icon(Icons.scale_outlined))),
       ] else ...[
         if (appState.stock.isEmpty)
@@ -858,7 +939,7 @@ class _EntryPageState extends State<EntryPage> {
         label: Padding(padding: const EdgeInsets.all(12), child: Text(saving ? 'KAYDEDİLİYOR...' : 'KAYDET')),
       ),
     ]));
-  }
+  });
 
   Widget _dd(String label, String value, List<String> items, ValueChanged<String?> onChanged, {String Function(String)? labelOf}) {
     final safeItems = items.contains(value) ? items : [value, ...items];
@@ -909,7 +990,7 @@ class _RecordsPageState extends State<RecordsPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final list = sortedRecords(appState.recordsForDate(date));
     return Scaffold(
       appBar: AppBar(title: const Text('Kayıtları Düzenle')),
@@ -932,7 +1013,7 @@ class _RecordsPageState extends State<RecordsPage> {
         ))),
       ])),
     );
-  }
+  });
 }
 
 class EditRecordSheet extends StatefulWidget {
@@ -962,10 +1043,43 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
   }
 
   List<Map<String, dynamic>> get availableProducts {
-    final all = appState.products;
-    if (machine == '10 mm Spanzet') return all.where((p) => p['name'] == '10 mm Spanzet').toList();
-    if (machine == '12 mm Spanzet') return all.where((p) => p['name'] == '12 mm Spanzet').toList();
-    return all.where((p) => p['name'] != '10 mm Spanzet' && p['name'] != '12 mm Spanzet').toList();
+    final isSpanzetMachine = machine.toLowerCase().contains('spanzet');
+    return appState.products.where((p) => (p['type'] == 'spanzet') == isSpanzetMachine).toList();
+  }
+
+  Future<void> pickProduct() async {
+    final list = availableProducts;
+    String q = '';
+    final result = await showModalBottomSheet<String>(
+      context: context, isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setSheetState) {
+        final filtered = list.where((p) => (p['name'] as String).toLowerCase().contains(q.toLowerCase())).toList();
+        return Padding(
+          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
+          child: SizedBox(
+            height: MediaQuery.of(ctx).size.height * 0.75,
+            child: Padding(padding: const EdgeInsets.all(16), child: Column(children: [
+              Text('Ürün Seç', style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 10),
+              TextField(autofocus: true, decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder()),
+                  onChanged: (v) => setSheetState(() => q = v)),
+              const SizedBox(height: 8),
+              Expanded(child: filtered.isEmpty
+                  ? const Center(child: Text('Sonuç bulunamadı.'))
+                  : ListView.builder(
+                      itemCount: filtered.length,
+                      itemBuilder: (_, i) => ListTile(
+                        title: Text(filtered[i]['name'] as String),
+                        subtitle: Text('${filtered[i]['gram']} g/bakla'),
+                        onTap: () => Navigator.pop(ctx, filtered[i]['id'] as String),
+                      ),
+                    )),
+            ])),
+          ),
+        );
+      }),
+    );
+    if (result != null) setState(() => productId = result);
   }
 
   Future<void> save() async {
@@ -1000,8 +1114,12 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
         const SizedBox(height: 12),
         _dd('Makine', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
         if (list.isNotEmpty)
-          _dd('Ürün', productId!, list.map((p) => p['id'] as String).toList(), (v) => setState(() => productId = v),
-              labelOf: (id) => list.firstWhere((p) => p['id'] == id)['name'] as String),
+          Card(child: ListTile(
+            title: const Text('Ürün'),
+            subtitle: Text(list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['name'] as String),
+            trailing: const Icon(Icons.search),
+            onTap: pickProduct,
+          )),
         _dd('Vardiya', shift, shifts, (v) => setState(() => shift = v!)),
         if (appState.operators.isNotEmpty)
           _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
@@ -1044,7 +1162,7 @@ class _CalendarPageState extends State<CalendarPage> {
   DateTime selected = DateTime.now();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final date = dateStr(selected);
     final list = sortedRecords(appState.recordsForDate(date));
     final totalKg = list.where((r) => r['status'] == 'Üretimde').fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
@@ -1106,7 +1224,7 @@ class _CalendarPageState extends State<CalendarPage> {
         trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
     ]));
-  }
+  });
 }
 
 // =================== HAMMADDE STOKU ===================
@@ -1163,7 +1281,7 @@ class _StockPageState extends State<StockPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
       Text('Hammadde Stoku', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
@@ -1198,7 +1316,7 @@ class _StockPageState extends State<StockPage> {
         ]),
       ))),
     ]));
-  }
+  });
 }
 
 // =================== RAPORLAR (KÜMÜLATİF) ===================
@@ -1264,7 +1382,7 @@ class _ReportsPageState extends State<ReportsPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final all = [...appState.products];
     all.sort((a, b) {
       final oa = (a['order'] as num?)?.toInt() ?? 0;
@@ -1292,7 +1410,7 @@ class _ReportsPageState extends State<ReportsPage> {
             filtered: filtered,
           )),
     ]));
-  }
+  });
 
   Widget _productCard(String name, {required bool canReorder, int? index, int? total, List<Map<String, dynamic>>? filtered}) {
     final kg = appState.totalKgForProduct(name);
@@ -1357,7 +1475,7 @@ class ManagementPage extends StatelessWidget {
   const ManagementPage({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Center(child: Logo(height: 60)), const SizedBox(height: 16),
       Text('Yönetim', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
@@ -1405,7 +1523,7 @@ class ManagementPage extends StatelessWidget {
       const SizedBox(height: 8),
       OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
     ]));
-  }
+  });
 }
 
 class MachinesManagePage extends StatefulWidget {
@@ -1436,7 +1554,7 @@ class _MachinesManagePageState extends State<MachinesManagePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Makina Yönetimi')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
@@ -1455,7 +1573,7 @@ class _MachinesManagePageState extends State<MachinesManagePage> {
         ))),
       ])),
     );
-  }
+  });
 }
 
 class ProductsManagePage extends StatefulWidget {
@@ -1467,6 +1585,7 @@ class ProductsManagePage extends StatefulWidget {
 class _ProductsManagePageState extends State<ProductsManagePage> {
   final name = TextEditingController();
   final gram = TextEditingController();
+  String type = 'zincir';
 
   Future<void> add() async {
     final g = double.tryParse(gram.text.replaceAll(',', '.'));
@@ -1474,7 +1593,7 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ürün adı ve geçerli bir gramaj girin.')));
       return;
     }
-    await appState.addProduct(name.text.trim(), g);
+    await appState.addProduct(name.text.trim(), g, type);
     name.clear(); gram.clear();
   }
 
@@ -1491,7 +1610,7 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Ürün Yönetimi')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
@@ -1500,17 +1619,23 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
           const SizedBox(height: 10),
           TextField(controller: gram, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Gramaj (gram/bakla)', border: OutlineInputBorder())),
           const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: ChoiceChip(label: const Text('Zincir'), selected: type == 'zincir', onSelected: (_) => setState(() => type = 'zincir'))),
+            const SizedBox(width: 8),
+            Expanded(child: ChoiceChip(label: const Text('Spanzet'), selected: type == 'spanzet', onSelected: (_) => setState(() => type = 'spanzet'))),
+          ]),
+          const SizedBox(height: 10),
           SizedBox(width: double.infinity, child: FilledButton(onPressed: add, child: const Text('Ürün Ekle'))),
         ]))),
         const SizedBox(height: 12),
         ...appState.products.map((p) => Card(child: ListTile(
           title: Text(p['name']),
-          subtitle: Text('${p['gram']} g/bakla'),
+          subtitle: Text('${p['gram']} g/bakla  •  ${p['type'] == 'spanzet' ? 'Spanzet' : 'Zincir'}'),
           trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(p['id'], p['name'])),
         ))),
       ])),
     );
-  }
+  });
 }
 
 class OperatorsManagePage extends StatefulWidget {
@@ -1541,7 +1666,7 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Operatör Yönetimi')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
@@ -1557,5 +1682,5 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
         ))),
       ])),
     );
-  }
+  });
 }
