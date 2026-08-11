@@ -1,33 +1,45 @@
-name: bas_zincir
-description: Baş Zincir üretim takip uygulaması - MVP
-publish_to: "none"
-version: 0.1.0+1
+name: Build APK
 
-environment:
-  sdk: ">=3.3.0 <4.0.0"
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
 
-dependencies:
-  flutter:
-    sdk: flutter
-  flutter_localizations:
-    sdk: flutter
-  shared_preferences: ^2.5.3
-  firebase_core: ^3.6.0
-  firebase_auth: ^5.3.1
-  cloud_firestore: ^5.4.4
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^5.0.0
-  flutter_launcher_icons: ^0.13.1
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
 
-flutter_launcher_icons:
-  android: true
-  ios: false
-  image_path: "assets/bas_zincir_icon.png"
+      - name: Flutter surumunu goster
+        run: flutter --version
 
-flutter:
-  uses-material-design: true
-  assets:
-    - assets/bas_zincir_icon.png
+      - name: Android platform dosyalarini olustur (yoksa)
+        run: |
+          if [ ! -f android/app/build.gradle ] && [ ! -f android/app/build.gradle.kts ]; then
+            flutter create --platforms=android --project-name bas_zincir --org com.baszincir .
+          fi
+
+      - name: Bagimliliklari indir
+        run: flutter pub get
+
+      - name: Uygulama adini ayarla
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="Baş Zincir"/' android/app/src/main/AndroidManifest.xml
+          grep android:label android/app/src/main/AndroidManifest.xml
+
+      - name: Uygulama ikonunu olustur
+        run: dart run flutter_launcher_icons
+
+      - name: APK derle (release)
+        run: flutter build apk --release
+
+      - name: APK'yi paylas
+        uses: actions/upload-artifact@v4
+        with:
+          name: bas-zincir-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
