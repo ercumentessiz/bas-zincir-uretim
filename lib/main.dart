@@ -783,7 +783,7 @@ class _EntryPageState extends State<EntryPage> {
   }
 
   Future<void> pickProduct() async {
-    final list = availableProducts;
+    final list = [...availableProducts]..sort((a, b) => productSizeKey(a['name'] as String).compareTo(productSizeKey(b['name'] as String)));
     String q = '';
     final result = await showModalBottomSheet<String>(
       context: context, isScrollControlled: true,
@@ -1066,7 +1066,7 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
   }
 
   Future<void> pickProduct() async {
-    final list = availableProducts;
+    final list = [...availableProducts]..sort((a, b) => productSizeKey(a['name'] as String).compareTo(productSizeKey(b['name'] as String)));
     String q = '';
     final result = await showModalBottomSheet<String>(
       context: context, isScrollControlled: true,
