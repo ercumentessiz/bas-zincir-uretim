@@ -291,7 +291,25 @@ class AppState extends ChangeNotifier {
   // ---- Hammadde Stoku ----
   Future<void> addStock(double cap, String malzeme, double kg) =>
       _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg});
-  Future<void> updateStockKg(String id, double kg) => _db.collection('stock').doc(id).update({'kg': kg});
+
+  Future<void> updateStockKg(String id, double kg) async {
+    final idx = stock.indexWhere((s) => s['id'] == id);
+    if (idx != -1) {
+      final newStock = [...stock];
+      newStock[idx] = {...newStock[idx], 'kg': kg};
+      stock = newStock;
+      notifyListeners();
+    }
+    await _db.collection('stock').doc(id).update({'kg': kg});
+  }
+
+  Future<void> subtractStock(String id, double subtractKg) async {
+    final idx = stock.indexWhere((s) => s['id'] == id);
+    if (idx == -1) return;
+    final next = (stock[idx]['kg'] as num).toDouble() - subtractKg;
+    await updateStockKg(id, next);
+  }
+
   Future<void> deleteStock(String id) => _db.collection('stock').doc(id).delete();
 
   double get totalStockKg => stock.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
@@ -1268,6 +1286,56 @@ class _StockPageState extends State<StockPage> {
     if (result != null) await appState.updateStockKg(item['id'], result);
   }
 
+  Future<void> adjustStockDialog(Map<String, dynamic> item) async {
+    final ctrl = TextEditingController();
+    final result = await showDialog<double>(context: context, builder: (_) => AlertDialog(
+      title: Text('${fmtCap(item['cap'] as num)} • ${item['malzeme']}'),
+      content: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Düşülecek miktar (kg)', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () {
+          final v = double.tryParse(ctrl.text.replaceAll(',', '.'));
+          Navigator.pop(context, v);
+        }, child: const Text('Düş')),
+      ],
+    ));
+    if (result != null && result > 0) {
+      try {
+        await appState.subtractStock(item['id'], result);
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${fmtKg(result)} kg düşüldü.')));
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
+      }
+    }
+  }
+
+  /// Bugün hangi makina hangi ürünü üretiyorsa (1. Makine, 2. Makine, ... sırasıyla),
+  /// o ürünün mm ölçüsüne denk gelen hammadde çapını en üste taşır.
+  List<Map<String, dynamic>> sortedStock() {
+    final today = lastEntryDate();
+    final todays = sortedRecords(appState.recordsForDate(today)).where((r) => r['status'] == 'Üretimde');
+    final priorityCaps = <double>[];
+    for (final r in todays) {
+      final size = productSizeKey(r['product'] as String? ?? '');
+      if (size.isFinite && !priorityCaps.contains(size)) priorityCaps.add(size);
+    }
+    final list = [...appState.stock];
+    list.sort((a, b) {
+      final aCap = (a['cap'] as num).toDouble();
+      final bCap = (b['cap'] as num).toDouble();
+      final ai = priorityCaps.indexOf(aCap);
+      final bi = priorityCaps.indexOf(bCap);
+      final aRank = ai == -1 ? 999999 : ai;
+      final bRank = bi == -1 ? 999999 : bi;
+      if (aRank != bRank) return aRank.compareTo(bRank);
+      final c = aCap.compareTo(bCap);
+      if (c != 0) return c;
+      return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
+    });
+    return list;
+  }
+
   Future<void> confirmDelete(String id, String label) async {
     final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
       title: const Text('Kalemi sil'),
@@ -1305,12 +1373,17 @@ class _StockPageState extends State<StockPage> {
       ]))),
       const SizedBox(height: 12),
       if (appState.stock.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Henüz hammadde stok kaydı yok.')),
-      ...appState.stock.map((s) => Card(child: ListTile(
+      if (appState.stock.isNotEmpty)
+        Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(
+          'Bugün üretimde kullanılan ölçüler, makina sırasına (1. Makine, 2. Makine...) göre en üstte gösterilir.',
+          style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
+      ...sortedStock().map((s) => Card(child: ListTile(
         title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           Text('${fmtKg((s['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
           if (appState.isAdmin) ...[
-            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editKg(s)),
+            IconButton(icon: const Icon(Icons.edit_outlined), tooltip: 'Miktarı ayarla', onPressed: () => editKg(s)),
+            IconButton(icon: const Icon(Icons.remove_circle_outline), tooltip: 'Manuel Düş', onPressed: () => adjustStockDialog(s)),
             IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(s['id'], '${fmtCap(s['cap'] as num)} ${s['malzeme']}')),
           ],
         ]),
