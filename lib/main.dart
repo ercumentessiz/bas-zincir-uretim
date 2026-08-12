@@ -1310,26 +1310,11 @@ class _StockPageState extends State<StockPage> {
     }
   }
 
-  /// Bugün hangi makina hangi ürünü üretiyorsa (1. Makine, 2. Makine, ... sırasıyla),
-  /// o ürünün mm ölçüsüne denk gelen hammadde çapını en üste taşır.
+  /// Çapa göre küçükten büyüğe, aynı çapta malzeme adına göre sabit sıralama.
   List<Map<String, dynamic>> sortedStock() {
-    final today = lastEntryDate();
-    final todays = sortedRecords(appState.recordsForDate(today)).where((r) => r['status'] == 'Üretimde');
-    final priorityCaps = <double>[];
-    for (final r in todays) {
-      final size = productSizeKey(r['product'] as String? ?? '');
-      if (size.isFinite && !priorityCaps.contains(size)) priorityCaps.add(size);
-    }
     final list = [...appState.stock];
     list.sort((a, b) {
-      final aCap = (a['cap'] as num).toDouble();
-      final bCap = (b['cap'] as num).toDouble();
-      final ai = priorityCaps.indexOf(aCap);
-      final bi = priorityCaps.indexOf(bCap);
-      final aRank = ai == -1 ? 999999 : ai;
-      final bRank = bi == -1 ? 999999 : bi;
-      if (aRank != bRank) return aRank.compareTo(bRank);
-      final c = aCap.compareTo(bCap);
+      final c = (a['cap'] as num).compareTo(b['cap'] as num);
       if (c != 0) return c;
       return (a['malzeme'] as String).compareTo(b['malzeme'] as String);
     });
@@ -1373,10 +1358,6 @@ class _StockPageState extends State<StockPage> {
       ]))),
       const SizedBox(height: 12),
       if (appState.stock.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Henüz hammadde stok kaydı yok.')),
-      if (appState.stock.isNotEmpty)
-        Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(
-          'Bugün üretimde kullanılan ölçüler, makina sırasına (1. Makine, 2. Makine...) göre en üstte gösterilir.',
-          style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
       ...sortedStock().map((s) => Card(child: ListTile(
         title: Text('${fmtCap(s['cap'] as num)} • ${s['malzeme']}'),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
