@@ -33,8 +33,8 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> machines = [];
   List<Map<String, dynamic>> stock = [];
   List<Map<String, dynamic>> wiredraw = [];
-  Map<String, String> productResetDates = {};
-  Map<String, dynamic> productAdjustments = {};
+  Map<String, String> productResetDates = {}; // key: product id
+  Map<String, double> productAdjustments = {}; // key: product id
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
@@ -148,11 +148,16 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     });
 
-    _db.collection('meta').doc('settings').snapshots().listen((doc) {
-      final raw = doc.data()?['productResetDates'];
-      productResetDates = raw == null ? {} : Map<String, String>.from(raw as Map);
-      final rawAdj = doc.data()?['productAdjustments'];
-      productAdjustments = rawAdj == null ? {} : Map<String, dynamic>.from(rawAdj as Map);
+    _db.collection('productSettings').snapshots().listen((snap) {
+      final resets = <String, String>{};
+      final adjustments = <String, double>{};
+      for (final d in snap.docs) {
+        final data = d.data();
+        if (data['resetDate'] != null) resets[d.id] = data['resetDate'] as String;
+        adjustments[d.id] = (data['adjustment'] as num?)?.toDouble() ?? 0.0;
+      }
+      productResetDates = resets;
+      productAdjustments = adjustments;
       notifyListeners();
     });
 
@@ -347,43 +352,46 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> wiredrawForDate(String date) => wiredraw.where((w) => w['date'] == date).toList();
 
   // ---- Ürün bazlı sayaç sıfırlama ve manuel düşüm ----
-  Future<void> resetProductTotal(String productName) async {
-    productResetDates = {...productResetDates, productName: dateNow()};
-    productAdjustments = {...productAdjustments, productName: 0};
+  Future<void> resetProductTotal(String productId) async {
+    final date = dateNow();
+    productResetDates = {...productResetDates, productId: date};
+    productAdjustments = {...productAdjustments, productId: 0};
     notifyListeners();
-    await _db.collection('meta').doc('settings').set({
-      'productResetDates.$productName': dateNow(),
-      'productAdjustments.$productName': 0,
+    await _db.collection('productSettings').doc(productId).set({
+      'resetDate': date,
+      'adjustment': 0,
     }, SetOptions(merge: true));
   }
 
-  Future<void> adjustProductTotal(String productName, double subtractKg) async {
-    final current = (productAdjustments[productName] as num?)?.toDouble() ?? 0.0;
-    final next = current - subtractKg;
-    productAdjustments = {...productAdjustments, productName: next};
+  /// Bir ürünün toplamını istenen kg değerine ayarlar (elle ekleme/çıkarma
+  /// için tek yöntem — aradaki fark otomatik hesaplanıp saklanır).
+  Future<void> setProductTotal(String productId, String productName, double newTotal) async {
+    final produced = records
+        .where((r) => r['product'] == productName && r['status'] == 'Üretimde' && _afterReset(productId, r['date'] as String))
+        .fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+    final newAdj = newTotal - produced;
+    productAdjustments = {...productAdjustments, productId: newAdj};
     notifyListeners();
-    await _db.collection('meta').doc('settings').set({
-      'productAdjustments.$productName': next,
-    }, SetOptions(merge: true));
+    await _db.collection('productSettings').doc(productId).set({'adjustment': newAdj}, SetOptions(merge: true));
   }
 
-  bool _afterReset(String product, String date) {
-    final r = productResetDates[product];
+  bool _afterReset(String productId, String date) {
+    final r = productResetDates[productId];
     return r == null || date.compareTo(r) >= 0;
   }
 
-  double totalKgForProduct(String name) {
+  double totalKgForProduct(String productId, String name) {
     final produced = records
-        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
+        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(productId, r['date'] as String))
         .fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
-    final adj = (productAdjustments[name] as num?)?.toDouble() ?? 0.0;
+    final adj = productAdjustments[productId] ?? 0.0;
     final total = produced + adj;
     return total < 0 ? 0 : total;
   }
 
-  DateTime? firstDateForProduct(String name) {
+  DateTime? firstDateForProduct(String productId, String name) {
     final ds = records
-        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(name, r['date'] as String))
+        .where((r) => r['product'] == name && r['status'] == 'Üretimde' && _afterReset(productId, r['date'] as String))
         .map((r) => DateTime.tryParse(r['date'] as String))
         .whereType<DateTime>()
         .toList();
@@ -476,8 +484,8 @@ class _HomePageState extends State<HomePage> {
       const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Özet'),
       if (isAdmin) const NavigationDestination(icon: Icon(Icons.add_circle_outline), selectedIcon: Icon(Icons.add_circle), label: 'Giriş'),
       const NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Takvim'),
-      const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Stok'),
-      const NavigationDestination(icon: Icon(Icons.assessment_outlined), selectedIcon: Icon(Icons.assessment), label: 'Raporlar'),
+      const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Hammadde Stok'),
+      const NavigationDestination(icon: Icon(Icons.assessment_outlined), selectedIcon: Icon(Icons.assessment), label: 'Ürün Stok'),
       NavigationDestination(
         icon: Icon(isAdmin ? Icons.settings_outlined : Icons.login),
         selectedIcon: Icon(isAdmin ? Icons.settings : Icons.login),
@@ -1337,7 +1345,7 @@ class _StockPageState extends State<StockPage> {
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
-      Text('Hammadde Stoku', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+      Text('Hammadde Stok', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 12),
       Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         const Text('TOPLAM STOK', style: TextStyle(fontWeight: FontWeight.w600)),
@@ -1384,7 +1392,7 @@ class ReportsPage extends StatefulWidget {
 class _ReportsPageState extends State<ReportsPage> {
   String query = '';
 
-  Future<void> confirmReset(String name) async {
+  Future<void> confirmReset(String productId, String name) async {
     final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
       title: const Text('Ürünü Sıfırla'),
       content: Text('"$name" için kümülatif toplam bugünden itibaren sıfırdan sayılmaya başlayacak. Geçmiş kayıtlar silinmez, sadece bu ürünün toplamı bu tarihten itibaren hesaplanır. Emin misiniz?'),
@@ -1394,29 +1402,29 @@ class _ReportsPageState extends State<ReportsPage> {
       ],
     ));
     if (ok == true) {
-      await appState.resetProductTotal(name);
+      await appState.resetProductTotal(productId);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" sıfırlandı.')));
     }
   }
 
-  Future<void> adjustDialog(String name) async {
-    final ctrl = TextEditingController();
+  Future<void> editTotalDialog(String productId, String name, double currentTotal) async {
+    final ctrl = TextEditingController(text: currentTotal.toStringAsFixed(2).replaceAll('.', ','));
     final result = await showDialog<double>(context: context, builder: (_) => AlertDialog(
-      title: Text('$name'),
+      title: Text(name),
       content: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true,
-          decoration: const InputDecoration(labelText: 'Düşülecek miktar (kg) — örn. satılan', border: OutlineInputBorder())),
+          decoration: const InputDecoration(labelText: 'Güncel toplam (kg)', border: OutlineInputBorder())),
       actions: [
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
         FilledButton(onPressed: () {
           final v = double.tryParse(ctrl.text.replaceAll(',', '.'));
           Navigator.pop(context, v);
-        }, child: const Text('Düş')),
+        }, child: const Text('Kaydet')),
       ],
     ));
-    if (result != null && result > 0) {
+    if (result != null && result >= 0) {
       try {
-        await appState.adjustProductTotal(name, result);
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" toplamından ${fmtKg(result)} kg düşüldü.')));
+        await appState.setProductTotal(productId, name, result);
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('"$name" toplamı ${fmtKg(result)} kg olarak güncellendi.')));
       } catch (e) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedilemedi: $e')));
       }
@@ -1448,7 +1456,7 @@ class _ReportsPageState extends State<ReportsPage> {
 
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
-      Text('Ürün Üretim Raporu', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+      Text('Ürün Stok', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 12),
       TextField(onChanged: (v) => setState(() => query = v), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Ürün ara', border: OutlineInputBorder())),
       const SizedBox(height: 12),
@@ -1467,11 +1475,13 @@ class _ReportsPageState extends State<ReportsPage> {
   });
 
   Widget _productCard(String name, {required bool canReorder, int? index, int? total, List<Map<String, dynamic>>? filtered}) {
-    final kg = appState.totalKgForProduct(name);
-    final d = appState.firstDateForProduct(name);
-    final gram = (appState.products.firstWhere((p) => p['name'] == name)['gram'] as num).toDouble();
+    final product = appState.products.firstWhere((p) => p['name'] == name);
+    final productId = product['id'] as String;
+    final kg = appState.totalKgForProduct(productId, name);
+    final d = appState.firstDateForProduct(productId, name);
+    final gram = (product['gram'] as num).toDouble();
     final qty = gram == 0 ? 0 : kg * 1000 / gram;
-    final resetD = appState.productResetDates[name];
+    final resetD = appState.productResetDates[productId];
     final active = appState.isProductActiveToday(name);
     return Card(child: Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
@@ -1507,14 +1517,14 @@ class _ReportsPageState extends State<ReportsPage> {
           const Spacer(),
           if (appState.isAdmin) ...[
             TextButton(
-              onPressed: () => confirmReset(name),
+              onPressed: () => editTotalDialog(productId, name, kg),
               style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-              child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red)),
+              child: const Text('Düzenle', style: TextStyle(fontSize: 12, color: Colors.blue)),
             ),
             TextButton(
-              onPressed: () => adjustDialog(name),
+              onPressed: () => confirmReset(productId, name),
               style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
-              child: const Text('Manuel Düş', style: TextStyle(fontSize: 12, color: Colors.blue)),
+              child: const Text('Sıfırla', style: TextStyle(fontSize: 12, color: Colors.red)),
             ),
           ],
         ]),
@@ -1555,7 +1565,7 @@ class ManagementPage extends StatelessWidget {
       )),
       Card(child: ListTile(
         leading: const Icon(Icons.inventory_outlined),
-        title: const Text('Stok Yönetimi'),
+        title: const Text('Hammadde Stok Yönetimi'),
         subtitle: Text('${appState.stock.length} kalem'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const StockPage())),
@@ -1566,6 +1576,13 @@ class ManagementPage extends StatelessWidget {
         subtitle: Text('${appState.products.length} ürün'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProductsManagePage())),
+      )),
+      Card(child: ListTile(
+        leading: const Icon(Icons.leaderboard_outlined),
+        title: const Text('Personel Performansı'),
+        subtitle: const Text('Operatör bazlı üretim/tel çekme raporu'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PersonnelReportPage())),
       )),
       Card(child: ListTile(
         leading: const Icon(Icons.people_outline),
@@ -1734,6 +1751,90 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
           title: Text(o['name']),
           trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
         ))),
+      ])),
+    );
+  });
+}
+
+// =================== PERSONEL PERFORMANSI ===================
+
+class PersonnelReportPage extends StatefulWidget {
+  const PersonnelReportPage({super.key});
+  @override
+  State<PersonnelReportPage> createState() => _PersonnelReportPageState();
+}
+
+class _PersonnelReportPageState extends State<PersonnelReportPage> {
+  String mode = 'uretim';
+  String period = 'today';
+
+  @override
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
+    final now = DateTime.now();
+    final source = mode == 'uretim' ? appState.records : appState.wiredraw;
+    final filtered = source.where((r) {
+      if (mode == 'uretim' && r['status'] != 'Üretimde') return false;
+      final d = DateTime.tryParse(r['date'] as String? ?? '');
+      if (d == null) return false;
+      if (period == 'today') return r['date'] == dateNow();
+      return d.year == now.year && d.month == now.month;
+    });
+    final totals = <String, double>{};
+    for (final r in filtered) {
+      final op = (r['operator'] as String?)?.trim();
+      if (op == null || op.isEmpty) continue;
+      totals[op] = (totals[op] ?? 0) + (r['kg'] as num).toDouble();
+    }
+    final sortedOps = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
+    final grandTotal = totals.values.fold(0.0, (s, v) => s + v);
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Personel Performansı')),
+      body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+        Row(children: [
+          Expanded(child: ChoiceChip(
+            label: const Text('Zincir Üretimi'), selected: mode == 'uretim',
+            onSelected: (_) => setState(() => mode = 'uretim'),
+          )),
+          const SizedBox(width: 8),
+          Expanded(child: ChoiceChip(
+            label: const Text('Tel Çekme'), selected: mode == 'telcekme',
+            onSelected: (_) => setState(() => mode = 'telcekme'),
+          )),
+        ]),
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: ChoiceChip(
+            label: const Text('Bugün'), selected: period == 'today',
+            onSelected: (_) => setState(() => period = 'today'),
+          )),
+          const SizedBox(width: 8),
+          Expanded(child: ChoiceChip(
+            label: Text('${turkishMonths[now.month - 1]} ${now.year}'), selected: period == 'month',
+            onSelected: (_) => setState(() => period = 'month'),
+          )),
+        ]),
+        const SizedBox(height: 16),
+        Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('TOPLAM (${mode == 'uretim' ? 'Zincir Üretimi' : 'Tel Çekme'})', style: const TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          Text('${fmtKg(grandTotal)} kg  •  ${fmtTon(grandTotal)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        ]))),
+        const SizedBox(height: 12),
+        if (sortedOps.isEmpty) const Padding(padding: EdgeInsets.all(18), child: Text('Bu dönemde kayıt bulunmuyor.')),
+        ...sortedOps.asMap().entries.map((e) {
+          final rank = e.key + 1;
+          final op = e.value;
+          final kg = totals[op]!;
+          return Card(child: ListTile(
+            leading: CircleAvatar(child: Text('$rank')),
+            title: Text(op),
+            trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+              Text('${fmtTon(kg)} ton', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+            ]),
+          ));
+        }),
       ])),
     );
   });
