@@ -484,7 +484,7 @@ class _HomePageState extends State<HomePage> {
       const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Özet'),
       if (isAdmin) const NavigationDestination(icon: Icon(Icons.add_circle_outline), selectedIcon: Icon(Icons.add_circle), label: 'Giriş'),
       const NavigationDestination(icon: Icon(Icons.calendar_month_outlined), selectedIcon: Icon(Icons.calendar_month), label: 'Takvim'),
-      const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Hammadde Stok'),
+      const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Hammadde'),
       const NavigationDestination(icon: Icon(Icons.assessment_outlined), selectedIcon: Icon(Icons.assessment), label: 'Ürün Stok'),
       NavigationDestination(
         icon: Icon(isAdmin ? Icons.settings_outlined : Icons.login),
@@ -1186,6 +1186,8 @@ class CalendarPage extends StatefulWidget {
 
 class _CalendarPageState extends State<CalendarPage> {
   DateTime selected = DateTime.now();
+  String perfMode = 'uretim';
+  String perfPeriod = 'gun';
 
   @override
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
@@ -1249,8 +1251,67 @@ class _CalendarPageState extends State<CalendarPage> {
         subtitle: Text('${w['shift']} • ${w['operator']}'),
         trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
+      const SizedBox(height: 18),
+      Text('Personel Performansı', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(child: ChoiceChip(
+          label: const Text('Zincir Üretimi'), selected: perfMode == 'uretim',
+          onSelected: (_) => setState(() => perfMode = 'uretim'),
+        )),
+        const SizedBox(width: 8),
+        Expanded(child: ChoiceChip(
+          label: const Text('Tel Çekme'), selected: perfMode == 'telcekme',
+          onSelected: (_) => setState(() => perfMode = 'telcekme'),
+        )),
+      ]),
+      const SizedBox(height: 8),
+      Row(children: [
+        Expanded(child: ChoiceChip(
+          label: Text(fmtDate(date)), selected: perfPeriod == 'gun',
+          onSelected: (_) => setState(() => perfPeriod = 'gun'),
+        )),
+        const SizedBox(width: 8),
+        Expanded(child: ChoiceChip(
+          label: Text('${turkishMonths[selected.month - 1]} ${selected.year}'), selected: perfPeriod == 'ay',
+          onSelected: (_) => setState(() => perfPeriod = 'ay'),
+        )),
+      ]),
+      const SizedBox(height: 10),
+      ..._operatorBreakdown(perfMode, perfPeriod, date),
     ]));
   });
+
+  List<Widget> _operatorBreakdown(String mode, String period, String date) {
+    final source = mode == 'uretim' ? appState.records : appState.wiredraw;
+    final filtered = source.where((r) {
+      if (mode == 'uretim' && r['status'] != 'Üretimde') return false;
+      if (period == 'gun') return r['date'] == date;
+      final d = DateTime.tryParse(r['date'] as String? ?? '');
+      return d != null && d.year == selected.year && d.month == selected.month;
+    });
+    final totals = <String, double>{};
+    for (final r in filtered) {
+      final op = (r['operator'] as String?)?.trim();
+      if (op == null || op.isEmpty) continue;
+      totals[op] = (totals[op] ?? 0) + (r['kg'] as num).toDouble();
+    }
+    final sortedOps = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
+    if (sortedOps.isEmpty) {
+      return [const Padding(padding: EdgeInsets.all(12), child: Text('Bu dönemde kayıt bulunmuyor.'))];
+    }
+    return sortedOps.asMap().entries.map((e) {
+      final kg = totals[e.value]!;
+      return Card(child: ListTile(
+        leading: CircleAvatar(child: Text('${e.key + 1}')),
+        title: Text(e.value),
+        trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text('${fmtTon(kg)} ton', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        ]),
+      ));
+    }).toList();
+  }
 }
 
 // =================== HAMMADDE STOKU ===================
@@ -1578,13 +1639,6 @@ class ManagementPage extends StatelessWidget {
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProductsManagePage())),
       )),
       Card(child: ListTile(
-        leading: const Icon(Icons.leaderboard_outlined),
-        title: const Text('Personel Performansı'),
-        subtitle: const Text('Operatör bazlı üretim/tel çekme raporu'),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PersonnelReportPage())),
-      )),
-      Card(child: ListTile(
         leading: const Icon(Icons.people_outline),
         title: const Text('Operatör Yönetimi'),
         subtitle: Text('${appState.operators.length} operatör'),
@@ -1751,90 +1805,6 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
           title: Text(o['name']),
           trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
         ))),
-      ])),
-    );
-  });
-}
-
-// =================== PERSONEL PERFORMANSI ===================
-
-class PersonnelReportPage extends StatefulWidget {
-  const PersonnelReportPage({super.key});
-  @override
-  State<PersonnelReportPage> createState() => _PersonnelReportPageState();
-}
-
-class _PersonnelReportPageState extends State<PersonnelReportPage> {
-  String mode = 'uretim';
-  String period = 'today';
-
-  @override
-  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
-    final now = DateTime.now();
-    final source = mode == 'uretim' ? appState.records : appState.wiredraw;
-    final filtered = source.where((r) {
-      if (mode == 'uretim' && r['status'] != 'Üretimde') return false;
-      final d = DateTime.tryParse(r['date'] as String? ?? '');
-      if (d == null) return false;
-      if (period == 'today') return r['date'] == dateNow();
-      return d.year == now.year && d.month == now.month;
-    });
-    final totals = <String, double>{};
-    for (final r in filtered) {
-      final op = (r['operator'] as String?)?.trim();
-      if (op == null || op.isEmpty) continue;
-      totals[op] = (totals[op] ?? 0) + (r['kg'] as num).toDouble();
-    }
-    final sortedOps = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
-    final grandTotal = totals.values.fold(0.0, (s, v) => s + v);
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Personel Performansı')),
-      body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
-        Row(children: [
-          Expanded(child: ChoiceChip(
-            label: const Text('Zincir Üretimi'), selected: mode == 'uretim',
-            onSelected: (_) => setState(() => mode = 'uretim'),
-          )),
-          const SizedBox(width: 8),
-          Expanded(child: ChoiceChip(
-            label: const Text('Tel Çekme'), selected: mode == 'telcekme',
-            onSelected: (_) => setState(() => mode = 'telcekme'),
-          )),
-        ]),
-        const SizedBox(height: 8),
-        Row(children: [
-          Expanded(child: ChoiceChip(
-            label: const Text('Bugün'), selected: period == 'today',
-            onSelected: (_) => setState(() => period = 'today'),
-          )),
-          const SizedBox(width: 8),
-          Expanded(child: ChoiceChip(
-            label: Text('${turkishMonths[now.month - 1]} ${now.year}'), selected: period == 'month',
-            onSelected: (_) => setState(() => period = 'month'),
-          )),
-        ]),
-        const SizedBox(height: 16),
-        Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('TOPLAM (${mode == 'uretim' ? 'Zincir Üretimi' : 'Tel Çekme'})', style: const TextStyle(fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          Text('${fmtKg(grandTotal)} kg  •  ${fmtTon(grandTotal)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-        ]))),
-        const SizedBox(height: 12),
-        if (sortedOps.isEmpty) const Padding(padding: EdgeInsets.all(18), child: Text('Bu dönemde kayıt bulunmuyor.')),
-        ...sortedOps.asMap().entries.map((e) {
-          final rank = e.key + 1;
-          final op = e.value;
-          final kg = totals[op]!;
-          return Card(child: ListTile(
-            leading: CircleAvatar(child: Text('$rank')),
-            title: Text(op),
-            trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-              Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-              Text('${fmtTon(kg)} ton', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-            ]),
-          ));
-        }),
       ])),
     );
   });
