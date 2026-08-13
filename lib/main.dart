@@ -642,6 +642,7 @@ class _LoginPageState extends State<LoginPage> {
   final pass = TextEditingController();
   String? error;
   bool busy = false;
+  bool showPass = false;
 
   Future<void> doLogin() async {
     setState(() { busy = true; error = null; });
@@ -668,8 +669,14 @@ class _LoginPageState extends State<LoginPage> {
         TextField(controller: email, keyboardType: TextInputType.emailAddress,
             decoration: const InputDecoration(labelText: 'E-posta', border: OutlineInputBorder())),
         const SizedBox(height: 10),
-        TextField(controller: pass, obscureText: true,
-            decoration: const InputDecoration(labelText: 'Şifre', border: OutlineInputBorder())),
+        TextField(controller: pass, obscureText: !showPass,
+            decoration: InputDecoration(
+              labelText: 'Şifre', border: const OutlineInputBorder(),
+              suffixIcon: IconButton(
+                icon: Icon(showPass ? Icons.visibility_off : Icons.visibility),
+                onPressed: () => setState(() => showPass = !showPass),
+              ),
+            )),
         if (error != null) Padding(
           padding: const EdgeInsets.only(top: 10),
           child: Text(error!, style: const TextStyle(color: Colors.red)),
