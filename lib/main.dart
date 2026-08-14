@@ -30,6 +30,7 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> records = [];
   List<Map<String, dynamic>> products = [];
   List<Map<String, dynamic>> operators = [];
+  List<Map<String, dynamic>> assistantOperators = [];
   List<Map<String, dynamic>> machines = [];
   List<Map<String, dynamic>> stock = [];
   List<Map<String, dynamic>> wiredraw = [];
@@ -141,6 +142,15 @@ class AppState extends ChangeNotifier {
         return;
       }
       operators = snap.docs.map((d) {
+        final m = Map<String, dynamic>.from(d.data());
+        m['id'] = d.id;
+        return m;
+      }).toList();
+      notifyListeners();
+    });
+
+    _db.collection('assistantOperators').orderBy('name').snapshots().listen((snap) {
+      assistantOperators = snap.docs.map((d) {
         final m = Map<String, dynamic>.from(d.data());
         m['id'] = d.id;
         return m;
@@ -288,6 +298,10 @@ class AppState extends ChangeNotifier {
   // ---- Operatörler ----
   Future<void> addOperator(String name) => _db.collection('operators').add({'name': name});
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
+
+  // ---- Yardımcı Operatörler ----
+  Future<void> addAssistantOperator(String name) => _db.collection('assistantOperators').add({'name': name});
+  Future<void> deleteAssistantOperator(String id) => _db.collection('assistantOperators').doc(id).delete();
 
   // ---- Makinalar ----
   Future<void> addMachine(String name) => _db.collection('machines').add({'name': name});
@@ -738,6 +752,7 @@ class DashboardPage extends StatelessWidget {
         leading: CircleAvatar(child: Text(r['machine'].toString().replaceAll('Makine ', '').replaceAll('Spanzet ', ''))),
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'
+            '${(r['assistantOperator'] as String?)?.isNotEmpty == true ? ' + ${r['assistantOperator']}' : ''}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: appState.isAdmin
             ? Row(mainAxisSize: MainAxisSize.min, children: [
@@ -774,7 +789,7 @@ class EntryPage extends StatefulWidget {
 
 class _EntryPageState extends State<EntryPage> {
   String entryMode = 'uretim';
-  String machine = 'Makine 1', operator = '', shift = 'Gündüz', status = 'Üretimde';
+  String machine = 'Makine 1', operator = '', assistantOperator = '', shift = 'Gündüz', status = 'Üretimde';
   String? productId;
   String? stockId;
   DateTime selectedDate = DateTime.now();
@@ -832,6 +847,8 @@ class _EntryPageState extends State<EntryPage> {
     if (result != null) setState(() => productId = result);
   }
 
+  bool get needsProduct => status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı';
+
   Future<void> save() async {
     if (operator.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Operatör seçin.')));
@@ -839,9 +856,12 @@ class _EntryPageState extends State<EntryPage> {
     }
     if (entryMode == 'uretim') {
       final list = availableProducts;
-      if (list.isEmpty) return;
-      final p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
-      final gram = (p['gram'] as num).toDouble();
+      Map<String, dynamic>? p;
+      if (needsProduct) {
+        if (list.isEmpty) return;
+        p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
+      }
+      final gram = p == null ? 0.0 : (p['gram'] as num).toDouble();
       final q = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
       if (status == 'Üretimde' && q <= 0) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim adedini girin.')));
@@ -851,8 +871,8 @@ class _EntryPageState extends State<EntryPage> {
       setState(() => saving = true);
       try {
         await appState.add({
-          'date': dateStr(selectedDate), 'machine': machine, 'product': p['name'], 'gram': gram,
-          'operator': operator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim()
+          'date': dateStr(selectedDate), 'machine': machine, 'product': p?['name'], 'gram': gram,
+          'operator': operator, 'assistantOperator': assistantOperator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim()
         });
         qty.clear(); note.clear();
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim kaydı kaydedildi.')));
@@ -927,16 +947,19 @@ class _EntryPageState extends State<EntryPage> {
       const SizedBox(height: 10),
       if (entryMode == 'uretim') ...[
         _dd('Makine / Bölüm', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
-        if (list.isEmpty)
-          const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
-        else
-          Card(child: ListTile(
-            title: const Text('Ürün'),
-            subtitle: Text(list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['name'] as String),
-            trailing: const Icon(Icons.search),
-            onTap: pickProduct,
-          )),
-        if (list.isNotEmpty) Card(child: ListTile(title: const Text('Gramaj'), subtitle: Text('${gram.toStringAsFixed(2)} g / bakla'), leading: const Icon(Icons.scale_outlined))),
+        _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
+        if (needsProduct) ...[
+          if (list.isEmpty)
+            const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu makina için ürün tanımlı değil. Önce Yönetim > Ürün Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
+          else
+            Card(child: ListTile(
+              title: const Text('Ürün'),
+              subtitle: Text(list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['name'] as String),
+              trailing: const Icon(Icons.search),
+              onTap: pickProduct,
+            )),
+          if (list.isNotEmpty) Card(child: ListTile(title: const Text('Gramaj'), subtitle: Text('${gram.toStringAsFixed(2)} g / bakla'), leading: const Icon(Icons.scale_outlined))),
+        ],
       ] else ...[
         if (appState.stock.isEmpty)
           const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Henüz stok kalemi yok. Önce Stok bölümünden ekleyin.', style: TextStyle(color: Colors.red)))
@@ -952,8 +975,11 @@ class _EntryPageState extends State<EntryPage> {
         const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Operatör tanımlı değil. Önce Yönetim > Operatör Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
       else
         _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
+      if (appState.assistantOperators.isNotEmpty)
+        _dd('Yardımcı Operatör', assistantOperator.isEmpty ? '(Seçilmedi)' : assistantOperator,
+            ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
+            (v) => setState(() => assistantOperator = v == '(Seçilmedi)' ? '' : v!)),
       if (entryMode == 'uretim') ...[
-        _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
         if (status == 'Üretimde') ...[
           TextField(controller: qty, keyboardType: TextInputType.number, onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(labelText: 'Üretilen bakla adedi', border: OutlineInputBorder())),
@@ -967,7 +993,7 @@ class _EntryPageState extends State<EntryPage> {
       TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Not (isteğe bağlı)', border: OutlineInputBorder())),
       const SizedBox(height: 16),
       FilledButton.icon(
-        onPressed: saving || appState.operators.isEmpty || (entryMode == 'uretim' ? list.isEmpty : appState.stock.isEmpty) ? null : save,
+        onPressed: saving || appState.operators.isEmpty || (entryMode == 'uretim' ? (needsProduct && list.isEmpty) : appState.stock.isEmpty) ? null : save,
         icon: const Icon(Icons.save),
         label: Padding(padding: const EdgeInsets.all(12), child: Text(saving ? 'KAYDEDİLİYOR...' : 'KAYDET')),
       ),
@@ -1037,7 +1063,7 @@ class _RecordsPageState extends State<RecordsPage> {
         if (list.isEmpty) const Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte kayıt bulunmuyor.')),
         ...list.map((r) => Card(child: ListTile(
           title: Text('${displayMachine(r['machine'])} • ${r['product'] ?? r['status']}'),
-          subtitle: Text('${r['status']}${r['status'] == 'Üretimde' ? ' • ${r['qty']} bakla • ${fmtKg((r['kg'] as num).toDouble())} kg' : ''}\n${r['operator']} • ${r['shift']}'),
+          subtitle: Text('${r['status']}${r['status'] == 'Üretimde' ? ' • ${r['qty']} bakla • ${fmtKg((r['kg'] as num).toDouble())} kg' : ''}\n${r['operator']}${(r['assistantOperator'] as String?)?.isNotEmpty == true ? ' + ${r['assistantOperator']}' : ''} • ${r['shift']}'),
           isThreeLine: true,
           trailing: Row(mainAxisSize: MainAxisSize.min, children: [
             IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => openEdit(r)),
@@ -1060,11 +1086,14 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
   late String machine = widget.record['machine'];
   late String status = widget.record['status'];
   late String operator = widget.record['operator'];
+  late String assistantOperator = widget.record['assistantOperator'] ?? '';
   late String shift = widget.record['shift'];
   late String? productId;
   late TextEditingController qty;
   late TextEditingController note;
   bool saving = false;
+
+  bool get needsProduct => status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı';
 
   @override
   void initState() {
@@ -1118,7 +1147,7 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
   Future<void> save() async {
     final list = availableProducts;
     Map<String, dynamic>? p;
-    if (list.isNotEmpty) p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
+    if (needsProduct && list.isNotEmpty) p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
     final q = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
     final gram = p == null ? 0.0 : (p['gram'] as num).toDouble();
     final kg = status == 'Üretimde' ? q * gram / 1000 : 0;
@@ -1126,7 +1155,7 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
     try {
       await appState.update(widget.record['id'], {
         'machine': machine, 'product': p?['name'], 'gram': gram,
-        'operator': operator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim(),
+        'operator': operator, 'assistantOperator': assistantOperator, 'shift': shift, 'status': status, 'qty': q, 'kg': kg, 'note': note.text.trim(),
       });
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -1146,7 +1175,8 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
         Text('Kaydı Düzenle', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
         const SizedBox(height: 12),
         _dd('Makine', machine, appState.machines.map((m) => m['name'] as String).toList(), (v) => setState(() => machine = v!), labelOf: displayMachine),
-        if (list.isNotEmpty)
+        _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
+        if (needsProduct && list.isNotEmpty)
           Card(child: ListTile(
             title: const Text('Ürün'),
             subtitle: Text(list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['name'] as String),
@@ -1156,7 +1186,10 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
         _dd('Vardiya', shift, shifts, (v) => setState(() => shift = v!)),
         if (appState.operators.isNotEmpty)
           _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
-        _dd('Durum', status, statuses, (v) => setState(() => status = v!)),
+        if (appState.assistantOperators.isNotEmpty)
+          _dd('Yardımcı Operatör', assistantOperator.isEmpty ? '(Seçilmedi)' : assistantOperator,
+              ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
+              (v) => setState(() => assistantOperator = v == '(Seçilmedi)' ? '' : v!)),
         if (status == 'Üretimde')
           TextField(controller: qty, keyboardType: TextInputType.number,
               decoration: const InputDecoration(labelText: 'Bakla adedi', border: OutlineInputBorder())),
@@ -1239,6 +1272,7 @@ class _CalendarPageState extends State<CalendarPage> {
         ) : null,
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? r['status']} • ${r['shift']} • ${r['operator']}'
+            '${(r['assistantOperator'] as String?)?.isNotEmpty == true ? ' + ${r['assistantOperator']}' : ''}'
             '${(r['note'] as String?)?.isNotEmpty == true ? '\nNot: ${r['note']}' : ''}'),
         trailing: appState.isAdmin
             ? Row(mainAxisSize: MainAxisSize.min, children: [
@@ -1652,6 +1686,13 @@ class ManagementPage extends StatelessWidget {
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const OperatorsManagePage())),
       )),
+      Card(child: ListTile(
+        leading: const Icon(Icons.engineering_outlined),
+        title: const Text('Yardımcı Operatör Yönetimi'),
+        subtitle: Text('${appState.assistantOperators.length} yardımcı operatör'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AssistantOperatorsManagePage())),
+      )),
       const SizedBox(height: 8),
       OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
     ]));
@@ -1809,6 +1850,54 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
         ]))),
         const SizedBox(height: 12),
         ...appState.operators.map((o) => Card(child: ListTile(
+          title: Text(o['name']),
+          trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
+        ))),
+      ])),
+    );
+  });
+}
+
+
+class AssistantOperatorsManagePage extends StatefulWidget {
+  const AssistantOperatorsManagePage({super.key});
+  @override
+  State<AssistantOperatorsManagePage> createState() => _AssistantOperatorsManagePageState();
+}
+
+class _AssistantOperatorsManagePageState extends State<AssistantOperatorsManagePage> {
+  final name = TextEditingController();
+
+  Future<void> add() async {
+    if (name.text.trim().isEmpty) return;
+    await appState.addAssistantOperator(name.text.trim());
+    name.clear();
+  }
+
+  Future<void> confirmDelete(String id, String label) async {
+    final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
+      title: const Text('Yardımcı operatörü sil'),
+      content: Text('"$label" silinsin mi?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sil')),
+      ],
+    ));
+    if (ok == true) await appState.deleteAssistantOperator(id);
+  }
+
+  @override
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Yardımcı Operatör Yönetimi')),
+      body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+        Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
+          Expanded(child: TextField(controller: name, decoration: const InputDecoration(labelText: 'Yardımcı operatör adı', border: OutlineInputBorder()))),
+          const SizedBox(width: 8),
+          FilledButton(onPressed: add, child: const Text('Ekle')),
+        ]))),
+        const SizedBox(height: 12),
+        ...appState.assistantOperators.map((o) => Card(child: ListTile(
           title: Text(o['name']),
           trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
         ))),
