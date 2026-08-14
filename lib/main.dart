@@ -571,6 +571,14 @@ String displayMachine(String m) {
   return n != null ? '$n. Makine' : m;
 }
 
+/// Daire içinde göstermek için makina adından kısa bir etiket (sadece sayı) çıkarır.
+String machineAvatarLabel(String raw) {
+  final n = extractMakineNumber(raw);
+  if (n != null) return '$n';
+  final m = RegExp(r'(\d+)').firstMatch(raw);
+  return m != null ? m.group(1)! : raw;
+}
+
 String fmtCap(num c) {
   final isWhole = c % 1 == 0;
   return isWhole ? '${c.toInt()} mm' : '${c.toString().replaceAll('.', ',')} mm';
@@ -749,7 +757,7 @@ class DashboardPage extends StatelessWidget {
             child: EditRecordSheet(record: r),
           ),
         ) : null,
-        leading: CircleAvatar(child: Text(r['machine'].toString().replaceAll('Makine ', '').replaceAll('Spanzet ', ''))),
+        leading: CircleAvatar(child: Text(machineAvatarLabel(r['machine'].toString()))),
         title: Text(displayMachine(r['machine'])),
         subtitle: Text('${r['product'] ?? ''} • ${r['shift']} • ${r['operator']}'
             '${(r['assistantOperator'] as String?)?.isNotEmpty == true ? ' + ${r['assistantOperator']}' : ''}'
@@ -1226,8 +1234,6 @@ class CalendarPage extends StatefulWidget {
 
 class _CalendarPageState extends State<CalendarPage> {
   DateTime selected = DateTime.now();
-  String perfMode = 'uretim';
-  String perfPeriod = 'gun';
 
   @override
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
@@ -1293,66 +1299,15 @@ class _CalendarPageState extends State<CalendarPage> {
         trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
       const SizedBox(height: 18),
-      Text('Personel Performansı', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-      const SizedBox(height: 8),
-      Row(children: [
-        Expanded(child: ChoiceChip(
-          label: const Text('Zincir Üretimi'), selected: perfMode == 'uretim',
-          onSelected: (_) => setState(() => perfMode = 'uretim'),
-        )),
-        const SizedBox(width: 8),
-        Expanded(child: ChoiceChip(
-          label: const Text('Tel Çekme'), selected: perfMode == 'telcekme',
-          onSelected: (_) => setState(() => perfMode = 'telcekme'),
-        )),
-      ]),
-      const SizedBox(height: 8),
-      Row(children: [
-        Expanded(child: ChoiceChip(
-          label: Text(fmtDate(date)), selected: perfPeriod == 'gun',
-          onSelected: (_) => setState(() => perfPeriod = 'gun'),
-        )),
-        const SizedBox(width: 8),
-        Expanded(child: ChoiceChip(
-          label: Text('${turkishMonths[selected.month - 1]} ${selected.year}'), selected: perfPeriod == 'ay',
-          onSelected: (_) => setState(() => perfPeriod = 'ay'),
-        )),
-      ]),
-      const SizedBox(height: 10),
-      ..._operatorBreakdown(perfMode, perfPeriod, date),
+      Card(child: ListTile(
+        leading: const Icon(Icons.leaderboard_outlined),
+        title: const Text('Performans Raporları'),
+        subtitle: const Text('Makina, Operatör ve Yardımcı Operatör bazlı aylık/yıllık raporlar'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PerformanceReportPage())),
+      )),
     ]));
   });
-
-  List<Widget> _operatorBreakdown(String mode, String period, String date) {
-    final source = mode == 'uretim' ? appState.records : appState.wiredraw;
-    final filtered = source.where((r) {
-      if (mode == 'uretim' && r['status'] != 'Üretimde') return false;
-      if (period == 'gun') return r['date'] == date;
-      final d = DateTime.tryParse(r['date'] as String? ?? '');
-      return d != null && d.year == selected.year && d.month == selected.month;
-    });
-    final totals = <String, double>{};
-    for (final r in filtered) {
-      final op = (r['operator'] as String?)?.trim();
-      if (op == null || op.isEmpty) continue;
-      totals[op] = (totals[op] ?? 0) + (r['kg'] as num).toDouble();
-    }
-    final sortedOps = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
-    if (sortedOps.isEmpty) {
-      return [const Padding(padding: EdgeInsets.all(12), child: Text('Bu dönemde kayıt bulunmuyor.'))];
-    }
-    return sortedOps.asMap().entries.map((e) {
-      final kg = totals[e.value]!;
-      return Card(child: ListTile(
-        leading: CircleAvatar(child: Text('${e.key + 1}')),
-        title: Text(e.value),
-        trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-          Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
-          Text('${fmtTon(kg)} ton', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
-        ]),
-      ));
-    }).toList();
-  }
 }
 
 // =================== HAMMADDE STOKU ===================
@@ -1904,4 +1859,150 @@ class _AssistantOperatorsManagePageState extends State<AssistantOperatorsManageP
       ])),
     );
   });
+}
+
+// =================== PERFORMANS RAPORLARI ===================
+
+class PerformanceReportPage extends StatefulWidget {
+  const PerformanceReportPage({super.key});
+  @override
+  State<PerformanceReportPage> createState() => _PerformanceReportPageState();
+}
+
+class _PerformanceReportPageState extends State<PerformanceReportPage> {
+  String mode = 'makina'; // makina | operator | yardimci
+  String subMode = 'uretim'; // operator modu icin: uretim | telcekme
+  String period = 'ay'; // ay | yil
+
+  bool _inPeriod(String? dateStr) {
+    final d = DateTime.tryParse(dateStr ?? '');
+    if (d == null) return false;
+    final now = DateTime.now();
+    if (period == 'ay') return d.year == now.year && d.month == now.month;
+    return d.year == now.year;
+  }
+
+  @override
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
+    final now = DateTime.now();
+    final periodLabel = period == 'ay' ? '${turkishMonths[now.month - 1]} ${now.year}' : '${now.year}';
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Performans Raporları')),
+      body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+        Row(children: [
+          Expanded(child: ChoiceChip(label: const Text('Makina'), selected: mode == 'makina', onSelected: (_) => setState(() => mode = 'makina'))),
+          const SizedBox(width: 6),
+          Expanded(child: ChoiceChip(label: const Text('Operatör'), selected: mode == 'operator', onSelected: (_) => setState(() => mode = 'operator'))),
+          const SizedBox(width: 6),
+          Expanded(child: ChoiceChip(label: const Text('Yardımcı'), selected: mode == 'yardimci', onSelected: (_) => setState(() => mode = 'yardimci'))),
+        ]),
+        if (mode == 'operator') ...[
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: ChoiceChip(label: const Text('Zincir Üretimi'), selected: subMode == 'uretim', onSelected: (_) => setState(() => subMode = 'uretim'))),
+            const SizedBox(width: 8),
+            Expanded(child: ChoiceChip(label: const Text('Tel Çekme'), selected: subMode == 'telcekme', onSelected: (_) => setState(() => subMode = 'telcekme'))),
+          ]),
+        ],
+        const SizedBox(height: 8),
+        Row(children: [
+          Expanded(child: ChoiceChip(label: const Text('Bu Ay'), selected: period == 'ay', onSelected: (_) => setState(() => period = 'ay'))),
+          const SizedBox(width: 8),
+          Expanded(child: ChoiceChip(label: const Text('Bu Yıl'), selected: period == 'yil', onSelected: (_) => setState(() => period = 'yil'))),
+        ]),
+        const SizedBox(height: 6),
+        Text(periodLabel, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        const SizedBox(height: 16),
+        if (mode == 'makina') ..._machineSection() else ..._personSection(),
+      ])),
+    );
+  });
+
+  List<Widget> _machineSection() {
+    final widgets = <Widget>[];
+    for (final m in appState.machines) {
+      final name = m['name'] as String;
+      final recs = appState.records.where((r) => r['machine'] == name && _inPeriod(r['date'] as String?)).toList();
+      final produced = recs.where((r) => r['status'] == 'Üretimde');
+      final totalKg = produced.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+      final byProduct = <String, double>{};
+      for (final r in produced) {
+        final p = r['product'] as String?;
+        if (p == null) continue;
+        byProduct[p] = (byProduct[p] ?? 0) + (r['kg'] as num).toDouble();
+      }
+      final sortedProducts = byProduct.keys.toList()..sort((a, b) => byProduct[b]!.compareTo(byProduct[a]!));
+      final arizaCount = recs.where((r) => r['status'] == 'Arızalı').length;
+      final parcaCount = recs.where((r) => r['status'] == 'Parça Kırdı').length;
+      final bakimCount = recs.where((r) => r['status'] == 'Bakımda').length;
+      final ayarCount = recs.where((r) => r['status'] == 'Ayar Dönülüyor').length;
+
+      widgets.add(Card(child: ExpansionTile(
+        leading: CircleAvatar(child: Text(machineAvatarLabel(name))),
+        title: Text(displayMachine(name)),
+        subtitle: Text('${fmtKg(totalKg)} kg  •  ${fmtTon(totalKg)} ton'),
+        children: [
+          Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (sortedProducts.isEmpty)
+              const Text('Bu dönemde üretim yok.', style: TextStyle(color: Colors.grey))
+            else ...[
+              const Text('Ürün Bazlı Üretim', style: TextStyle(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              ...sortedProducts.map((p) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 2),
+                child: Row(children: [
+                  Expanded(child: Text(p)),
+                  Text('${fmtKg(byProduct[p]!)} kg', style: const TextStyle(fontWeight: FontWeight.w600)),
+                ]),
+              )),
+            ],
+            const SizedBox(height: 10),
+            const Text('Duruş Sayıları', style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Wrap(spacing: 16, runSpacing: 4, children: [
+              Text('Arızalı: $arizaCount', style: TextStyle(color: arizaCount > 0 ? Colors.red : Colors.grey.shade600)),
+              Text('Parça Kırdı: $parcaCount', style: TextStyle(color: parcaCount > 0 ? Colors.red : Colors.grey.shade600)),
+              Text('Bakımda: $bakimCount', style: TextStyle(color: Colors.grey.shade700)),
+              Text('Ayar Dönülüyor: $ayarCount', style: TextStyle(color: Colors.grey.shade700)),
+            ]),
+          ])),
+        ],
+      )));
+    }
+    return widgets;
+  }
+
+  List<Widget> _personSection() {
+    final source = mode == 'yardimci'
+        ? appState.records
+        : (subMode == 'uretim' ? appState.records : appState.wiredraw);
+    final key = mode == 'yardimci' ? 'assistantOperator' : 'operator';
+    final filtered = source.where((r) {
+      if (mode != 'yardimci' && subMode == 'uretim' && r['status'] != 'Üretimde') return false;
+      if (mode == 'yardimci' && r['status'] != 'Üretimde') return false;
+      return _inPeriod(r['date'] as String?);
+    });
+    final totals = <String, double>{};
+    for (final r in filtered) {
+      final name = (r[key] as String?)?.trim();
+      if (name == null || name.isEmpty) continue;
+      totals[name] = (totals[name] ?? 0) + (r['kg'] as num).toDouble();
+    }
+    final sorted = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
+    if (sorted.isEmpty) {
+      return [const Padding(padding: EdgeInsets.all(18), child: Text('Bu dönemde kayıt bulunmuyor.'))];
+    }
+    return sorted.asMap().entries.map((e) {
+      final kg = totals[e.value]!;
+      return Card(child: ListTile(
+        leading: CircleAvatar(child: Text('${e.key + 1}')),
+        title: Text(e.value),
+        trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${fmtKg(kg)} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
+          Text('${fmtTon(kg)} ton', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        ]),
+      ));
+    }).toList();
+  }
 }
