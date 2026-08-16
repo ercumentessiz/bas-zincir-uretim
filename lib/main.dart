@@ -136,16 +136,37 @@ class AppState extends ChangeNotifier {
         _seededOperators = true;
         final batch = _db.batch();
         for (final name in defaultOperatorNames) {
-          batch.set(_db.collection('operators').doc(), {'name': name});
+          batch.set(_db.collection('operators').doc(), {'name': name, 'roles': ['uretim']});
         }
         await batch.commit();
         return;
       }
-      operators = snap.docs.map((d) {
+      final list = snap.docs.map((d) {
         final m = Map<String, dynamic>.from(d.data());
         m['id'] = d.id;
         return m;
       }).toList();
+
+      final missingRoles = list.where((o) => o['roles'] == null).toList();
+      if (missingRoles.isNotEmpty) {
+        final batch = _db.batch();
+        for (final o in missingRoles) {
+          final name = o['name'] as String;
+          List<String> roles;
+          if (name == 'Alper Yiğit' || name == 'Çağlar Babacan') {
+            roles = ['telcekme'];
+          } else if (name == 'Hüseyin Bıyık') {
+            roles = ['uretim', 'telcekme'];
+          } else {
+            roles = ['uretim'];
+          }
+          batch.update(_db.collection('operators').doc(o['id'] as String), {'roles': roles});
+        }
+        await batch.commit();
+        return;
+      }
+
+      operators = list;
       notifyListeners();
     });
 
@@ -225,7 +246,9 @@ class AppState extends ChangeNotifier {
     });
   }
 
-  bool get isAdmin => currentUser != null;
+  static const adminEmail = 'pdrercumentessiz@gmail.com';
+  bool get isAdmin => currentUser != null && currentUser!.email?.toLowerCase() == adminEmail;
+  bool get isSignedIn => currentUser != null;
 
   Future<String?> signIn(String email, String password) async {
     try {
@@ -296,7 +319,8 @@ class AppState extends ChangeNotifier {
   }
 
   // ---- Operatörler ----
-  Future<void> addOperator(String name) => _db.collection('operators').add({'name': name});
+  Future<void> addOperator(String name, List<String> roles) => _db.collection('operators').add({'name': name, 'roles': roles});
+  Future<void> updateOperatorRoles(String id, List<String> roles) => _db.collection('operators').doc(id).update({'roles': roles});
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
 
   // ---- Yardımcı Operatörler ----
@@ -484,15 +508,21 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final isAdmin = appState.isAdmin;
+    final signedIn = appState.isSignedIn;
     if (isAdmin && !_wasAdmin) index = 0;
     _wasAdmin = isAdmin;
+
+    if (!signedIn) {
+      return const LoginPage();
+    }
+
     final pages = [
       const DashboardPage(),
       if (isAdmin) const EntryPage(),
       const CalendarPage(),
       const StockPage(),
       const ReportsPage(),
-      isAdmin ? const ManagementPage() : const LoginPage(),
+      isAdmin ? const ManagementPage() : const AccountPage(),
     ];
     final destinations = [
       const NavigationDestination(icon: Icon(Icons.dashboard_outlined), selectedIcon: Icon(Icons.dashboard), label: 'Özet'),
@@ -501,9 +531,9 @@ class _HomePageState extends State<HomePage> {
       const NavigationDestination(icon: Icon(Icons.inventory_outlined), selectedIcon: Icon(Icons.inventory), label: 'Hammadde'),
       const NavigationDestination(icon: Icon(Icons.assessment_outlined), selectedIcon: Icon(Icons.assessment), label: 'Ürün Stok'),
       NavigationDestination(
-        icon: Icon(isAdmin ? Icons.settings_outlined : Icons.login),
-        selectedIcon: Icon(isAdmin ? Icons.settings : Icons.login),
-        label: isAdmin ? 'Yönetim' : 'Yönetici Girişi',
+        icon: Icon(isAdmin ? Icons.settings_outlined : Icons.person_outline),
+        selectedIcon: Icon(isAdmin ? Icons.settings : Icons.person),
+        label: isAdmin ? 'Yönetim' : 'Hesap',
       ),
     ];
     if (index >= pages.length) index = 0;
@@ -669,9 +699,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<void> doLogin() async {
     setState(() { busy = true; error = null; });
     final err = await appState.signIn(email.text.trim(), pass.text);
-    if (err == null) {
-      homeKey.currentState?.goToHome();
-    } else if (mounted) {
+    if (err != null && mounted) {
       setState(() { busy = false; error = err; });
     }
   }
@@ -683,9 +711,9 @@ class _LoginPageState extends State<LoginPage> {
         const SizedBox(height: 20),
         const Center(child: Logo(height: 70)),
         const SizedBox(height: 24),
-        Text('Yönetici Girişi', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+        Text('Giriş Yap', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
         const SizedBox(height: 6),
-        Text('Sadece üretim verisi giren kişi giriş yapar. Patron ve pazarlamacılar giriş yapmadan raporları görebilir.',
+        Text('Bu uygulamadaki verilere yalnızca yetkili kişiler erişebilir. Size verilen e-posta ve şifre ile giriş yapın.',
             style: TextStyle(color: Colors.grey.shade700)),
         const SizedBox(height: 20),
         TextField(controller: email, keyboardType: TextInputType.emailAddress,
@@ -857,11 +885,15 @@ class _EntryPageState extends State<EntryPage> {
 
   bool get needsProduct => status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı';
 
+  List<Map<String, dynamic>> get availableOperators {
+    final key = entryMode == 'uretim' ? 'uretim' : 'telcekme';
+    return appState.operators.where((o) {
+      final roles = List<String>.from((o['roles'] as List?) ?? ['uretim']);
+      return roles.contains(key);
+    }).toList();
+  }
+
   Future<void> save() async {
-    if (operator.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Operatör seçin.')));
-      return;
-    }
     if (entryMode == 'uretim') {
       final list = availableProducts;
       Map<String, dynamic>? p;
@@ -925,7 +957,7 @@ class _EntryPageState extends State<EntryPage> {
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final list = availableProducts;
     if (list.isNotEmpty && !list.any((p) => p['id'] == productId)) productId = list.first['id'];
-    if (operator.isEmpty && appState.operators.isNotEmpty) operator = appState.operators.first['name'];
+    if (operator.isNotEmpty && !availableOperators.any((o) => o['name'] == operator)) operator = '';
     if (appState.stock.isNotEmpty && !appState.stock.any((s) => s['id'] == stockId)) stockId = appState.stock.first['id'];
     final gram = list.isEmpty ? 0.0 : (list.firstWhere((p) => p['id'] == productId, orElse: () => list.first)['gram'] as num).toDouble();
     final qn = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
@@ -979,10 +1011,12 @@ class _EntryPageState extends State<EntryPage> {
               }),
       ],
       _dd('Vardiya', shift, shifts, (v) => setState(() => shift = v!)),
-      if (appState.operators.isEmpty)
-        const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Operatör tanımlı değil. Önce Yönetim > Operatör Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
+      if (availableOperators.isEmpty)
+        const Padding(padding: EdgeInsets.only(bottom: 10), child: Text('Bu bölüm için operatör tanımlı değil. Önce Yönetim > Operatör Yönetimi\'nden ekleyin.', style: TextStyle(color: Colors.red)))
       else
-        _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
+        _dd('Operatör', operator.isEmpty ? '(Seçilmedi)' : operator,
+            ['(Seçilmedi)', ...availableOperators.map((o) => o['name'] as String)],
+            (v) => setState(() => operator = v == '(Seçilmedi)' ? '' : v!)),
       if (appState.assistantOperators.isNotEmpty)
         _dd('Yardımcı Operatör', assistantOperator.isEmpty ? '(Seçilmedi)' : assistantOperator,
             ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
@@ -1001,7 +1035,7 @@ class _EntryPageState extends State<EntryPage> {
       TextField(controller: note, maxLines: 2, decoration: const InputDecoration(labelText: 'Not (isteğe bağlı)', border: OutlineInputBorder())),
       const SizedBox(height: 16),
       FilledButton.icon(
-        onPressed: saving || appState.operators.isEmpty || (entryMode == 'uretim' ? (needsProduct && list.isEmpty) : appState.stock.isEmpty) ? null : save,
+        onPressed: saving || (entryMode == 'uretim' ? (needsProduct && list.isEmpty) : appState.stock.isEmpty) ? null : save,
         icon: const Icon(Icons.save),
         label: Padding(padding: const EdgeInsets.all(12), child: Text(saving ? 'KAYDEDİLİYOR...' : 'KAYDET')),
       ),
@@ -1103,6 +1137,11 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
 
   bool get needsProduct => status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı';
 
+  List<Map<String, dynamic>> get editAvailableOperators => appState.operators.where((o) {
+    final roles = List<String>.from((o['roles'] as List?) ?? ['uretim']);
+    return roles.contains('uretim');
+  }).toList();
+
   @override
   void initState() {
     super.initState();
@@ -1192,8 +1231,10 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
             onTap: pickProduct,
           )),
         _dd('Vardiya', shift, shifts, (v) => setState(() => shift = v!)),
-        if (appState.operators.isNotEmpty)
-          _dd('Operatör', operator, appState.operators.map((o) => o['name'] as String).toList(), (v) => setState(() => operator = v!)),
+        if (editAvailableOperators.isNotEmpty)
+          _dd('Operatör', operator.isEmpty ? '(Seçilmedi)' : operator,
+              ['(Seçilmedi)', ...editAvailableOperators.map((o) => o['name'] as String)],
+              (v) => setState(() => operator = v == '(Seçilmedi)' ? '' : v!)),
         if (appState.assistantOperators.isNotEmpty)
           _dd('Yardımcı Operatör', assistantOperator.isEmpty ? '(Seçilmedi)' : assistantOperator,
               ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
@@ -1592,6 +1633,25 @@ class _ReportsPageState extends State<ReportsPage> {
 
 // =================== YÖNETİM ===================
 
+class AccountPage extends StatelessWidget {
+  const AccountPage({super.key});
+  @override
+  Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
+    return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
+      const Center(child: Logo(height: 60)), const SizedBox(height: 16),
+      Text('Hesap', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
+      const SizedBox(height: 12),
+      Card(child: ListTile(
+        leading: const Icon(Icons.person),
+        title: const Text('Oturum açık'),
+        subtitle: Text(appState.currentUser?.email ?? ''),
+      )),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
+    ]));
+  });
+}
+
 class ManagementPage extends StatelessWidget {
   const ManagementPage({super.key});
 
@@ -1774,11 +1834,19 @@ class OperatorsManagePage extends StatefulWidget {
 
 class _OperatorsManagePageState extends State<OperatorsManagePage> {
   final name = TextEditingController();
+  bool roleUretim = true;
+  bool roleTelcekme = false;
 
   Future<void> add() async {
     if (name.text.trim().isEmpty) return;
-    await appState.addOperator(name.text.trim());
+    final roles = <String>[if (roleUretim) 'uretim', if (roleTelcekme) 'telcekme'];
+    if (roles.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('En az bir çalışma alanı seçin.')));
+      return;
+    }
+    await appState.addOperator(name.text.trim(), roles);
     name.clear();
+    setState(() { roleUretim = true; roleTelcekme = false; });
   }
 
   Future<void> confirmDelete(String id, String label) async {
@@ -1793,21 +1861,53 @@ class _OperatorsManagePageState extends State<OperatorsManagePage> {
     if (ok == true) await appState.deleteOperator(id);
   }
 
+  Future<void> editRoles(Map<String, dynamic> o) async {
+    final roles = List<String>.from((o['roles'] as List?) ?? ['uretim']);
+    bool u = roles.contains('uretim');
+    bool t = roles.contains('telcekme');
+    final result = await showDialog<List<String>>(context: context, builder: (_) => StatefulBuilder(builder: (ctx, setD) => AlertDialog(
+      title: Text(o['name']),
+      content: Column(mainAxisSize: MainAxisSize.min, children: [
+        CheckboxListTile(value: u, title: const Text('Zincir Üretimi'), onChanged: (v) => setD(() => u = v ?? false)),
+        CheckboxListTile(value: t, title: const Text('Tel Çekme'), onChanged: (v) => setD(() => t = v ?? false)),
+      ]),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () {
+          final newRoles = <String>[if (u) 'uretim', if (t) 'telcekme'];
+          Navigator.pop(context, newRoles);
+        }, child: const Text('Kaydet')),
+      ],
+    )));
+    if (result != null && result.isNotEmpty) await appState.updateOperatorRoles(o['id'], result);
+  }
+
   @override
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Operatör Yönetimi')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
-        Card(child: Padding(padding: const EdgeInsets.all(14), child: Row(children: [
-          Expanded(child: TextField(controller: name, decoration: const InputDecoration(labelText: 'Operatör adı', border: OutlineInputBorder()))),
-          const SizedBox(width: 8),
-          FilledButton(onPressed: add, child: const Text('Ekle')),
+        Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(children: [
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'Operatör adı', border: OutlineInputBorder())),
+          const SizedBox(height: 6),
+          CheckboxListTile(value: roleUretim, title: const Text('Zincir Üretimi'), contentPadding: EdgeInsets.zero, onChanged: (v) => setState(() => roleUretim = v ?? false)),
+          CheckboxListTile(value: roleTelcekme, title: const Text('Tel Çekme'), contentPadding: EdgeInsets.zero, onChanged: (v) => setState(() => roleTelcekme = v ?? false)),
+          const SizedBox(height: 6),
+          SizedBox(width: double.infinity, child: FilledButton(onPressed: add, child: const Text('Ekle'))),
         ]))),
         const SizedBox(height: 12),
-        ...appState.operators.map((o) => Card(child: ListTile(
-          title: Text(o['name']),
-          trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
-        ))),
+        ...appState.operators.map((o) {
+          final roles = List<String>.from((o['roles'] as List?) ?? ['uretim']);
+          final label = roles.length == 2 ? 'Zincir Üretimi + Tel Çekme' : (roles.contains('telcekme') ? 'Tel Çekme' : 'Zincir Üretimi');
+          return Card(child: ListTile(
+            title: Text(o['name']),
+            subtitle: Text(label),
+            trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+              IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editRoles(o)),
+              IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(o['id'], o['name'])),
+            ]),
+          ));
+        }),
       ])),
     );
   });
