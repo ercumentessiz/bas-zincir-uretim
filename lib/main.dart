@@ -43,12 +43,24 @@ class AppState extends ChangeNotifier {
   bool _seededMachines = false;
   bool _seededStock = false;
 
+  bool _dataListenersStarted = false;
+
   void init() {
     FirebaseAuth.instance.authStateChanges().listen((u) {
       currentUser = u;
       notifyListeners();
+      if (u != null && !_dataListenersStarted) {
+        _dataListenersStarted = true;
+        _startDataListeners();
+      }
+      if (u == null) {
+        loading = false;
+        notifyListeners();
+      }
     });
+  }
 
+  void _startDataListeners() {
     _db.collection('records').orderBy('createdAt', descending: true).snapshots().listen((snap) {
       records = snap.docs.map((d) {
         final m = Map<String, dynamic>.from(d.data());
@@ -706,37 +718,43 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: ListView(padding: const EdgeInsets.all(18), children: [
-        const SizedBox(height: 20),
-        const Center(child: Logo(height: 70)),
-        const SizedBox(height: 24),
-        Text('Giriş Yap', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 6),
-        Text('Bu uygulamadaki verilere yalnızca yetkili kişiler erişebilir. Size verilen e-posta ve şifre ile giriş yapın.',
-            style: TextStyle(color: Colors.grey.shade700)),
-        const SizedBox(height: 20),
-        TextField(controller: email, keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(labelText: 'E-posta', border: OutlineInputBorder())),
-        const SizedBox(height: 10),
-        TextField(controller: pass, obscureText: !showPass,
-            decoration: InputDecoration(
-              labelText: 'Şifre', border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                icon: Icon(showPass ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setState(() => showPass = !showPass),
+    return Scaffold(
+      body: SafeArea(
+        child: LayoutBuilder(builder: (context, constraints) {
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight - 48),
+              child: Center(
+                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                  const Center(child: Logo(height: 60)),
+                  const SizedBox(height: 28),
+                  TextField(controller: email, keyboardType: TextInputType.emailAddress,
+                      decoration: const InputDecoration(labelText: 'E-posta', border: OutlineInputBorder())),
+                  const SizedBox(height: 12),
+                  TextField(controller: pass, obscureText: !showPass,
+                      decoration: InputDecoration(
+                        labelText: 'Şifre', border: const OutlineInputBorder(),
+                        suffixIcon: IconButton(
+                          icon: Icon(showPass ? Icons.visibility_off : Icons.visibility),
+                          onPressed: () => setState(() => showPass = !showPass),
+                        ),
+                      )),
+                  if (error != null) Padding(
+                    padding: const EdgeInsets.only(top: 10),
+                    child: Text(error!, style: const TextStyle(color: Colors.red), textAlign: TextAlign.center),
+                  ),
+                  const SizedBox(height: 16),
+                  FilledButton(onPressed: busy ? null : doLogin, child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(busy ? 'Giriş yapılıyor...' : 'GİRİŞ YAP'),
+                  )),
+                ]),
               ),
-            )),
-        if (error != null) Padding(
-          padding: const EdgeInsets.only(top: 10),
-          child: Text(error!, style: const TextStyle(color: Colors.red)),
-        ),
-        const SizedBox(height: 16),
-        FilledButton(onPressed: busy ? null : doLogin, child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Text(busy ? 'Giriş yapılıyor...' : 'GİRİŞ YAP'),
-        )),
-      ]),
+            ),
+          );
+        }),
+      ),
     );
   }
 }
