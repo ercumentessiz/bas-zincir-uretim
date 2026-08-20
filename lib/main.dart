@@ -1,8 +1,14 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:excel/excel.dart' as xl;
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'firebase_options.dart';
 import 'products.dart' as seed;
 import 'stock_seed.dart';
@@ -652,6 +658,82 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup telefonun
+/// paylaşım menüsünü açar (Drive'a kaydet, WhatsApp/e-posta ile gönder vb.).
+Future<void> exportRows({
+  required BuildContext context,
+  required String fileBaseName,
+  required String title,
+  required List<String> headers,
+  required List<List<String>> rows,
+  required bool asExcel,
+}) async {
+  try {
+    final dir = await getTemporaryDirectory();
+    late String path;
+    if (asExcel) {
+      final book = xl.Excel.createExcel();
+      final sheetName = book.getDefaultSheet()!;
+      final sheet = book[sheetName];
+      sheet.appendRow(headers.map((h) => xl.TextCellValue(h)).toList());
+      for (final r in rows) {
+        sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
+      }
+      final bytes = book.encode();
+      if (bytes == null) throw Exception('Excel oluşturulamadı');
+      path = '${dir.path}/$fileBaseName.xlsx';
+      await File(path).writeAsBytes(bytes);
+    } else {
+      final doc = pw.Document();
+      doc.addPage(pw.MultiPage(
+        pageFormat: PdfPageFormat.a4.landscape,
+        build: (ctx) => [
+          pw.Text(title, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
+          pw.SizedBox(height: 10),
+          pw.TableHelper.fromTextArray(
+            headers: headers,
+            data: rows,
+            cellStyle: const pw.TextStyle(fontSize: 8),
+            headerStyle: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
+            cellPadding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+          ),
+        ],
+      ));
+      final bytes = await doc.save();
+      path = '${dir.path}/$fileBaseName.pdf';
+      await File(path).writeAsBytes(bytes);
+    }
+    await Share.shareXFiles([XFile(path)], text: title);
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dışa aktarılamadı: $e')));
+    }
+  }
+}
+
+/// İki dışa aktarma düğmesini (Excel / PDF) yan yana gösteren küçük bir satır.
+Widget exportButtonsRow({
+  required BuildContext context,
+  required String fileBaseName,
+  required String title,
+  required List<String> headers,
+  required List<List<String>> Function() rowsBuilder,
+}) {
+  return Row(children: [
+    Expanded(child: OutlinedButton.icon(
+      icon: const Icon(Icons.grid_on, size: 18),
+      label: const Text('Excel'),
+      onPressed: () => exportRows(context: context, fileBaseName: fileBaseName, title: title, headers: headers, rows: rowsBuilder(), asExcel: true),
+    )),
+    const SizedBox(width: 8),
+    Expanded(child: OutlinedButton.icon(
+      icon: const Icon(Icons.picture_as_pdf_outlined, size: 18),
+      label: const Text('PDF'),
+      onPressed: () => exportRows(context: context, fileBaseName: fileBaseName, title: title, headers: headers, rows: rowsBuilder(), asExcel: false),
+    )),
+  ]);
+}
+
 Future<void> confirmDeleteWiredraw(BuildContext context, Map<String, dynamic> w) async {
   final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
     title: const Text('Tel Çekme Kaydını Sil'),
@@ -925,7 +1007,7 @@ class _EntryPageState extends State<EntryPage> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim adedini girin.')));
         return;
       }
-      final kg = status == 'Üretimde' ? q * gram / 1000 : 0;
+      final kg = (status == 'Üretimde' || ((status == 'Arızalı' || status == 'Parça Kırdı') && q > 0)) ? q * gram / 1000 : 0;
       setState(() => saving = true);
       try {
         await appState.add({
@@ -1040,9 +1122,12 @@ class _EntryPageState extends State<EntryPage> {
             ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
             (v) => setState(() => assistantOperator = v == '(Seçilmedi)' ? '' : v!)),
       if (entryMode == 'uretim') ...[
-        if (status == 'Üretimde') ...[
+        if (status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı') ...[
           TextField(controller: qty, keyboardType: TextInputType.number, onChanged: (_) => setState(() {}),
-              decoration: const InputDecoration(labelText: 'Üretilen bakla adedi', border: OutlineInputBorder())),
+              decoration: InputDecoration(
+                labelText: status == 'Üretimde' ? 'Üretilen bakla adedi' : 'Üretilen bakla adedi (isteğe bağlı)',
+                border: const OutlineInputBorder(),
+              )),
           const SizedBox(height: 10),
           if (qn > 0) Card(child: ListTile(title: const Text('Otomatik hesap'), subtitle: Text('${fmtKg(qn * gram / 1000)} kg  •  ${fmtTon(qn * gram / 1000)} ton'))),
         ],
@@ -1215,7 +1300,11 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
     if (needsProduct && list.isNotEmpty) p = list.firstWhere((p) => p['id'] == productId, orElse: () => list.first);
     final q = int.tryParse(qty.text.replaceAll('.', '').replaceAll(',', '')) ?? 0;
     final gram = p == null ? 0.0 : (p['gram'] as num).toDouble();
-    final kg = status == 'Üretimde' ? q * gram / 1000 : 0;
+    if (status == 'Üretimde' && q <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Üretim adedini girin.')));
+      return;
+    }
+    final kg = (status == 'Üretimde' || ((status == 'Arızalı' || status == 'Parça Kırdı') && q > 0)) ? q * gram / 1000 : 0;
     setState(() => saving = true);
     try {
       await appState.update(widget.record['id'], {
@@ -1257,9 +1346,12 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
           _dd('Yardımcı Operatör', assistantOperator.isEmpty ? '(Seçilmedi)' : assistantOperator,
               ['(Seçilmedi)', ...appState.assistantOperators.map((o) => o['name'] as String)],
               (v) => setState(() => assistantOperator = v == '(Seçilmedi)' ? '' : v!)),
-        if (status == 'Üretimde')
+        if (status == 'Üretimde' || status == 'Arızalı' || status == 'Parça Kırdı')
           TextField(controller: qty, keyboardType: TextInputType.number,
-              decoration: const InputDecoration(labelText: 'Bakla adedi', border: OutlineInputBorder())),
+              decoration: InputDecoration(
+                labelText: status == 'Üretimde' ? 'Bakla adedi' : 'Bakla adedi (isteğe bağlı)',
+                border: const OutlineInputBorder(),
+              )),
         const SizedBox(height: 10),
         TextField(controller: note, decoration: const InputDecoration(labelText: 'Not', border: OutlineInputBorder())),
         const SizedBox(height: 16),
@@ -1316,14 +1408,47 @@ class _CalendarPageState extends State<CalendarPage> {
         Text('${fmtDate(date)} Toplam Üretim', style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Text('${fmtKg(totalKg)} kg  •  ${fmtTon(totalKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        exportButtonsRow(
+          context: context, fileBaseName: 'uretim_${date}', title: '${fmtDate(date)} Üretim Raporu',
+          headers: const ['Makine', 'Ürün', 'Durum', 'Vardiya', 'Operatör', 'Yardımcı', 'Bakla', 'Kg'],
+          rowsBuilder: () => list.map((r) => [
+            displayMachine(r['machine'] as String), (r['product'] as String?) ?? '', r['status'] as String,
+            r['shift'] as String, r['operator'] as String, (r['assistantOperator'] as String?) ?? '',
+            r['status'] == 'Üretimde' || r['status'] == 'Arızalı' || r['status'] == 'Parça Kırdı' ? '${r['qty'] ?? 0}' : '',
+            fmtKg((r['kg'] as num).toDouble()),
+          ]).toList(),
+        ),
       ]))),
       const SizedBox(height: 12),
       Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('${turkishMonths[selected.month - 1]} ${selected.year} Aylık Toplam Üretim', style: const TextStyle(fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Text('${fmtKg(monthKg)} kg  •  ${fmtTon(monthKg)} ton', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 10),
+        exportButtonsRow(
+          context: context, fileBaseName: 'uretim_${selected.year}_${selected.month}', title: '${turkishMonths[selected.month - 1]} ${selected.year} Üretim Raporu',
+          headers: const ['Tarih', 'Makine', 'Ürün', 'Durum', 'Vardiya', 'Operatör', 'Yardımcı', 'Bakla', 'Kg'],
+          rowsBuilder: () => sortedRecords(appState.records.where((r) {
+            final d = DateTime.tryParse(r['date'] as String);
+            return d != null && d.year == selected.year && d.month == selected.month;
+          }).toList()).map((r) => [
+            fmtDate(r['date'] as String), displayMachine(r['machine'] as String), (r['product'] as String?) ?? '', r['status'] as String,
+            r['shift'] as String, r['operator'] as String, (r['assistantOperator'] as String?) ?? '',
+            r['status'] == 'Üretimde' || r['status'] == 'Arızalı' || r['status'] == 'Parça Kırdı' ? '${r['qty'] ?? 0}' : '',
+            fmtKg((r['kg'] as num).toDouble()),
+          ]).toList(),
+        ),
       ]))),
       const SizedBox(height: 12),
+      Card(child: ListTile(
+        leading: const Icon(Icons.leaderboard_outlined),
+        title: const Text('Performans Raporları'),
+        subtitle: const Text('Makina, Operatör ve Yardımcı Operatör bazlı aylık/yıllık raporlar'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PerformanceReportPage())),
+      )),
+      const SizedBox(height: 18),
       if (list.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte kayıt bulunmuyor.')),
       if (appState.isAdmin && list.isNotEmpty)
         Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('Düzeltmek için bir kayda dokunun', style: TextStyle(fontSize: 12, color: Colors.grey.shade600))),
@@ -1357,14 +1482,6 @@ class _CalendarPageState extends State<CalendarPage> {
         subtitle: Text('${w['shift']} • ${w['operator']}'),
         trailing: Text('${fmtKg((w['kg'] as num).toDouble())} kg', style: const TextStyle(fontWeight: FontWeight.bold)),
       ))),
-      const SizedBox(height: 18),
-      Card(child: ListTile(
-        leading: const Icon(Icons.leaderboard_outlined),
-        title: const Text('Performans Raporları'),
-        subtitle: const Text('Makina, Operatör ve Yardımcı Operatör bazlı aylık/yıllık raporlar'),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PerformanceReportPage())),
-      )),
     ]));
   });
 }
@@ -2031,11 +2148,79 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
         ]),
         const SizedBox(height: 6),
         Text(periodLabel, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+        const SizedBox(height: 12),
+        exportButtonsRow(
+          context: context,
+          fileBaseName: '${mode}_${period}_${now.year}${period == 'ay' ? '_${now.month}' : ''}',
+          title: '${mode == 'makina' ? 'Makina' : mode == 'operator' ? 'Operatör' : 'Yardımcı Operatör'} Performansı - $periodLabel',
+          headers: _exportHeaders(),
+          rowsBuilder: _exportRows,
+        ),
         const SizedBox(height: 16),
         if (mode == 'makina') ..._machineSection() else ..._personSection(),
       ])),
     );
   });
+
+  List<String> _exportHeaders() {
+    if (mode == 'makina') return const ['Makine', 'Toplam Kg', 'Ürün', 'Ürün Kg', 'İlk Tarih', 'Son Tarih', 'Arızalı', 'Parça Kırdı', 'Bakımda', 'Ayar Dönülüyor'];
+    return const ['Sıra', 'İsim', 'Toplam Kg', 'Toplam Ton'];
+  }
+
+  List<List<String>> _exportRows() {
+    if (mode == 'makina') {
+      final rows = <List<String>>[];
+      for (final m in appState.machines) {
+        final name = m['name'] as String;
+        final recs = appState.records.where((r) => r['machine'] == name && _inPeriod(r['date'] as String?)).toList();
+        final produced = recs.where((r) => r['status'] == 'Üretimde');
+        final totalKg = produced.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+        final arizaCount = recs.where((r) => r['status'] == 'Arızalı').length;
+        final parcaCount = recs.where((r) => r['status'] == 'Parça Kırdı').length;
+        final bakimCount = recs.where((r) => r['status'] == 'Bakımda').length;
+        final ayarCount = recs.where((r) => r['status'] == 'Ayar Dönülüyor').length;
+        final byProduct = <String, List<Map<String, dynamic>>>{};
+        for (final r in produced) {
+          final p = r['product'] as String?;
+          if (p == null) continue;
+          (byProduct[p] ??= []).add(r);
+        }
+        if (byProduct.isEmpty) {
+          rows.add([displayMachine(name), fmtKg(totalKg), '', '', '', '', '$arizaCount', '$parcaCount', '$bakimCount', '$ayarCount']);
+        } else {
+          var first = true;
+          for (final entry in byProduct.entries) {
+            final pKg = entry.value.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+            final dates = entry.value.map((r) => r['date'] as String).toList()..sort();
+            rows.add([
+              first ? displayMachine(name) : '', first ? fmtKg(totalKg) : '',
+              entry.key, fmtKg(pKg), fmtDate(dates.first), fmtDate(dates.last),
+              first ? '$arizaCount' : '', first ? '$parcaCount' : '', first ? '$bakimCount' : '', first ? '$ayarCount' : '',
+            ]);
+            first = false;
+          }
+        }
+      }
+      return rows;
+    }
+    final source = mode == 'yardimci' ? appState.records : (subMode == 'uretim' ? appState.records : appState.wiredraw);
+    final key = mode == 'yardimci' ? 'assistantOperator' : 'operator';
+    final filtered = source.where((r) {
+      if (mode != 'yardimci' && subMode == 'uretim' && r['status'] != 'Üretimde') return false;
+      if (mode == 'yardimci' && r['status'] != 'Üretimde') return false;
+      return _inPeriod(r['date'] as String?);
+    });
+    final totals = <String, double>{};
+    for (final r in filtered) {
+      final name = (r[key] as String?)?.trim();
+      if (name == null || name.isEmpty) continue;
+      totals[name] = (totals[name] ?? 0) + (r['kg'] as num).toDouble();
+    }
+    final sorted = totals.keys.toList()..sort((a, b) => totals[b]!.compareTo(totals[a]!));
+    return sorted.asMap().entries.map((e) => [
+      '${e.key + 1}', e.value, fmtKg(totals[e.value]!), fmtTon(totals[e.value]!),
+    ]).toList();
+  }
 
   List<Widget> _machineSection() {
     final widgets = <Widget>[];
@@ -2045,10 +2230,12 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
       final produced = recs.where((r) => r['status'] == 'Üretimde');
       final totalKg = produced.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
       final byProduct = <String, double>{};
+      final productDates = <String, List<String>>{};
       for (final r in produced) {
         final p = r['product'] as String?;
         if (p == null) continue;
         byProduct[p] = (byProduct[p] ?? 0) + (r['kg'] as num).toDouble();
+        (productDates[p] ??= []).add(r['date'] as String);
       }
       final sortedProducts = byProduct.keys.toList()..sort((a, b) => byProduct[b]!.compareTo(byProduct[a]!));
       final arizaCount = recs.where((r) => r['status'] == 'Arızalı').length;
@@ -2067,13 +2254,17 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
             else ...[
               const Text('Ürün Bazlı Üretim', style: TextStyle(fontWeight: FontWeight.w600)),
               const SizedBox(height: 6),
-              ...sortedProducts.map((p) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(children: [
-                  Expanded(child: Text(p)),
-                  Text('${fmtKg(byProduct[p]!)} kg', style: const TextStyle(fontWeight: FontWeight.w600)),
-                ]),
-              )),
+              ...sortedProducts.map((p) {
+                final dates = [...productDates[p]!]..sort();
+                final range = dates.first == dates.last ? fmtDate(dates.first) : '${fmtDate(dates.first)} - ${fmtDate(dates.last)}';
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(children: [
+                    Expanded(child: Text('$p ($range)')),
+                    Text('${fmtKg(byProduct[p]!)} kg', style: const TextStyle(fontWeight: FontWeight.w600)),
+                  ]),
+                );
+              }),
             ],
             const SizedBox(height: 10),
             const Text('Duruş Sayıları', style: TextStyle(fontWeight: FontWeight.w600)),
