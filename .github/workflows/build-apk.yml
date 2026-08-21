@@ -35,6 +35,12 @@ jobs:
       - name: Uygulama ikonunu olustur
         run: dart run flutter_launcher_icons
 
+      - name: Android SDK surumunu yukselt (share_plus icin gerekli)
+        run: |
+          sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' android/app/build.gradle
+          sed -i -E 's/(targetSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' android/app/build.gradle
+          grep -E "compileSdk|targetSdk" android/app/build.gradle
+
       - name: APK derle (release)
         run: flutter build apk --release
 
