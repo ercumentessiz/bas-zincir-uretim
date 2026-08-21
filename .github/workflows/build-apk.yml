@@ -37,9 +37,13 @@ jobs:
 
       - name: Android SDK surumunu yukselt (share_plus icin gerekli)
         run: |
-          sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' android/app/build.gradle
-          sed -i -E 's/(targetSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' android/app/build.gradle
-          grep -E "compileSdk|targetSdk" android/app/build.gradle
+          GRADLE_FILE="android/app/build.gradle"
+          if [ ! -f "$GRADLE_FILE" ]; then
+            GRADLE_FILE="android/app/build.gradle.kts"
+          fi
+          sed -i -E 's/(compileSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' "$GRADLE_FILE"
+          sed -i -E 's/(targetSdk(Version)?[[:space:]]*=?[[:space:]]*)[^[:space:]]+/\g<1>35/' "$GRADLE_FILE"
+          grep -E "compileSdk|targetSdk" "$GRADLE_FILE"
 
       - name: APK derle (release)
         run: flutter build apk --release
