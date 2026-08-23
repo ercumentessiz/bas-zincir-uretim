@@ -15,9 +15,6 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Flutter surumunu goster
-        run: flutter --version
-
       - name: Android platform dosyalarini olustur (yoksa)
         run: |
           if [ ! -f android/app/build.gradle ] && [ ! -f android/app/build.gradle.kts ]; then
@@ -30,31 +27,26 @@ jobs:
       - name: Uygulama adini ayarla
         run: |
           sed -i 's/android:label="[^"]*"/android:label="Baş Zincir - Üretim"/' android/app/src/main/AndroidManifest.xml
-          grep android:label android/app/src/main/AndroidManifest.xml
 
       - name: Uygulama ikonunu olustur
         run: dart run flutter_launcher_icons
 
-      - name: Android SDK surumunu yukselt (share_plus icin gerekli)
+      - name: Android SDK surumunu yukselt
         run: |
           GRADLE_FILE="android/app/build.gradle"
           if [ ! -f "$GRADLE_FILE" ]; then
             GRADLE_FILE="android/app/build.gradle.kts"
           fi
-          echo "Duzenlenen dosya: $GRADLE_FILE"
-          echo "--- ONCESI ---"
-          cat "$GRADLE_FILE"
           python3 - "$GRADLE_FILE" << 'PYEOF'
           import re, sys
           path = sys.argv[1]
           with open(path, encoding='utf-8') as f:
               content = f.read()
-          content = re.sub(r'compileSdk(Version)?\s*=?\s*\S+', 'compileSdk = 35', content)
-          content = re.sub(r'targetSdk(Version)?\s*=?\s*\S+', 'targetSdk = 35', content)
+          content = re.sub(r'compileSdk(Version)?\s*=?\s*\S+', 'compileSdk = 36', content)
+          content = re.sub(r'targetSdk(Version)?\s*=?\s*\S+', 'targetSdk = 36', content)
           with open(path, 'w', encoding='utf-8') as f:
               f.write(content)
           PYEOF
-          echo "--- SONRASI ---"
           cat "$GRADLE_FILE"
 
       - name: APK derle (release)
