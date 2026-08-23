@@ -900,6 +900,7 @@ class DashboardPage extends StatelessWidget {
       const SizedBox(height: 18),
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
+      final sortedWiredraw = [...appState.wiredrawForDate(today)]..sort((a, b) => (a['shift'] == 'Gündüz' ? 0 : 1).compareTo(b['shift'] == 'Gündüz' ? 0 : 1));
       if (appState.wiredrawForDate(today).isEmpty)
         const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte tel çekme kaydı yok.'))),
       ...appState.wiredrawForDate(today).map((w) => Card(child: ListTile(
