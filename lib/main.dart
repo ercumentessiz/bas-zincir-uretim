@@ -603,6 +603,13 @@ int _machineIndex(String m) {
 }
 int _shiftOrder(String s) => s == 'Gündüz' ? 0 : (s == 'Gece' ? 1 : 2);
 
+/// Tel çekme kayıtlarını Gündüz vardiyası üstte, Gece altta olacak şekilde sıralar.
+List<Map<String, dynamic>> sortedWiredraw(List<Map<String, dynamic>> list) {
+  final copy = [...list];
+  copy.sort((a, b) => _shiftOrder(a['shift'] as String).compareTo(_shiftOrder(b['shift'] as String)));
+  return copy;
+}
+
 /// "Makine 23" ya da "23. Makine" biçimlerinin her ikisini de tanıyıp
 /// makina numarasını çıkarır. Eşleşme yoksa null döner.
 int? extractMakineNumber(String name) {
@@ -853,6 +860,7 @@ class DashboardPage extends StatelessWidget {
     final active = todayRecords.where((r) => r['status'] == 'Üretimde').length;
     final setup = todayRecords.where((r) => r['status'] == 'Ayar Dönülüyor').length;
     final broken = todayRecords.where((r) => ['Arızalı', 'Parça Kırdı'].contains(r['status'])).length;
+    final todayWiredraw = sortedWiredraw(appState.wiredrawForDate(today));
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Center(child: Logo(height: 70)),
       const SizedBox(height: 10),
@@ -900,10 +908,9 @@ class DashboardPage extends StatelessWidget {
       const SizedBox(height: 18),
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      final sortedWiredraw = [...appState.wiredrawForDate(today)]..sort((a, b) => (a['shift'] == 'Gündüz' ? 0 : 1).compareTo(b['shift'] == 'Gündüz' ? 0 : 1));
-      if (appState.wiredrawForDate(today).isEmpty)
+      if (todayWiredraw.isEmpty)
         const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('Bu tarihte tel çekme kaydı yok.'))),
-      ...appState.wiredrawForDate(today).map((w) => Card(child: ListTile(
+      ...todayWiredraw.map((w) => Card(child: ListTile(
         onTap: appState.isAdmin ? () => confirmDeleteWiredraw(context, w) : null,
         title: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']}'),
         subtitle: Text('${w['shift']} • ${w['operator']}'),
@@ -1396,6 +1403,7 @@ class _CalendarPageState extends State<CalendarPage> {
       final d = DateTime.tryParse(r['date'] as String);
       return d != null && d.year == selected.year && d.month == selected.month && r['status'] == 'Üretimde';
     }).fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
+    final dayWiredraw = sortedWiredraw(appState.wiredrawForDate(date));
     return SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
       const Logo(height: 52), const SizedBox(height: 8),
       Text('Takvim', style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold)),
@@ -1475,9 +1483,9 @@ class _CalendarPageState extends State<CalendarPage> {
       const SizedBox(height: 18),
       Text('Tel Çekme', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
       const SizedBox(height: 8),
-      if (appState.wiredrawForDate(date).isEmpty)
+      if (dayWiredraw.isEmpty)
         const Padding(padding: EdgeInsets.all(12), child: Text('Bu tarihte tel çekme kaydı yok.')),
-      ...appState.wiredrawForDate(date).map((w) => Card(child: ListTile(
+      ...dayWiredraw.map((w) => Card(child: ListTile(
         onTap: appState.isAdmin ? () => confirmDeleteWiredraw(context, w) : null,
         title: Text('${fmtCap(w['cap'] as num)} • ${w['malzeme']}'),
         subtitle: Text('${w['shift']} • ${w['operator']}'),
