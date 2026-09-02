@@ -36,10 +36,14 @@ jobs:
           if [ ! -f "$GRADLE_FILE" ]; then
             GRADLE_FILE="android/app/build.gradle.kts"
           fi
+          echo "Duzenlenen dosya: $GRADLE_FILE"
+          echo "--- ONCESI ---"
+          cat "$GRADLE_FILE"
           sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 36/' "$GRADLE_FILE"
           sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 36/' "$GRADLE_FILE"
           sed -i 's/targetSdk = flutter.targetSdkVersion/targetSdk = 36/' "$GRADLE_FILE"
           sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 36/' "$GRADLE_FILE"
+          echo "--- SONRASI ---"
           cat "$GRADLE_FILE"
 
       - name: APK derle (release)
