@@ -678,7 +678,12 @@ Future<void> exportRows({
   required bool asExcel,
 }) async {
   try {
-    final dir = await getTemporaryDirectory();
+    Directory dir;
+    try {
+      dir = (await getExternalStorageDirectory()) ?? await getTemporaryDirectory();
+    } catch (_) {
+      dir = await getTemporaryDirectory();
+    }
     late String path;
     if (asExcel) {
       final book = xl.Excel.createExcel();
@@ -693,9 +698,12 @@ Future<void> exportRows({
       path = '${dir.path}/$fileBaseName.xlsx';
       await File(path).writeAsBytes(bytes);
     } else {
+      final fontRegular = await PdfGoogleFonts.notoSansRegular();
+      final fontBold = await PdfGoogleFonts.notoSansBold();
       final doc = pw.Document();
       doc.addPage(pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
+        theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold),
         build: (ctx) => [
           pw.Text(title, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 10),
@@ -712,7 +720,15 @@ Future<void> exportRows({
       path = '${dir.path}/$fileBaseName.pdf';
       await File(path).writeAsBytes(bytes);
     }
-    await Share.shareXFiles([XFile(path)], text: title);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedildi: $path'), duration: const Duration(seconds: 6)));
+    }
+    try {
+      await Share.shareXFiles([XFile(path)], text: title);
+    } catch (_) {
+      // Paylaşım menüsü açılamadı (ör. PC/BlueStacks) — dosya zaten
+      // yukarıdaki konuma kaydedildi, bu bir sorun değil.
+    }
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dışa aktarılamadı: $e')));
