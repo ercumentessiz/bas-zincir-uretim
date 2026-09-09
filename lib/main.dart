@@ -1949,7 +1949,7 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
     name.clear(); gram.clear();
   }
 
-  Future<void> confirmDelete(String id, String label) async {
+    Future<void> confirmDelete(String id, String label) async {
     final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
       title: const Text('Ürünü sil'),
       content: Text('"$label" silinsin mi? Geçmiş üretim kayıtları etkilenmez.'),
@@ -1959,6 +1959,23 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
       ],
     ));
     if (ok == true) await appState.deleteProduct(id);
+  }
+
+  Future<void> editGram(Map<String, dynamic> p) async {
+    final ctrl = TextEditingController(text: (p['gram'] as num).toString().replaceAll('.', ','));
+    final result = await showDialog<double>(context: context, builder: (_) => AlertDialog(
+      title: Text(p['name']),
+      content: TextField(controller: ctrl, keyboardType: TextInputType.number, autofocus: true,
+          decoration: const InputDecoration(labelText: 'Gramaj (gram/bakla)', border: OutlineInputBorder())),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Vazgeç')),
+        FilledButton(onPressed: () {
+          final v = double.tryParse(ctrl.text.replaceAll(',', '.'));
+          Navigator.pop(context, v);
+        }, child: const Text('Kaydet')),
+      ],
+    ));
+    if (result != null && result > 0) await appState.updateProductGram(p['id'], result);
   }
 
   @override
