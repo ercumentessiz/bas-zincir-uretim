@@ -307,7 +307,8 @@ class AppState extends ChangeNotifier {
     batch.set(newRef, {'name': name, 'gram': gram, 'order': insertAt, 'type': type});
     await batch.commit();
   }
-  Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
+    Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
+    Future<void> updateProductGram(String id, double gram) => _db.collection('products').doc(id).update({'gram': gram});
 
   Future<String?> reorderProducts(List<String> orderedIds) async {
     final map = {for (final p in products) p['id'] as String: p};
