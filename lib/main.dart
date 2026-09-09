@@ -616,9 +616,10 @@ List<Map<String, dynamic>> sortedWiredraw(List<Map<String, dynamic>> list) {
 /// makina numarasını çıkarır. Eşleşme yoksa null döner.
 int? extractMakineNumber(String name) {
   final trimmed = name.trim();
-  final m1 = RegExp(r'^Makine (\d+)$').firstMatch(trimmed);
+  if (trimmed.toLowerCase().contains('spanzet')) return null;
+  final m1 = RegExp(r'[Mm]akin[ae]\s*(\d+)').firstMatch(trimmed);
   if (m1 != null) return int.parse(m1.group(1)!);
-  final m2 = RegExp(r'^(\d+)\.\s*Makine$').firstMatch(trimmed);
+  final m2 = RegExp(r'^(\d+)\.?\s*[Mm]akin[ae]').firstMatch(trimmed);
   if (m2 != null) return int.parse(m2.group(1)!);
   return null;
 }
