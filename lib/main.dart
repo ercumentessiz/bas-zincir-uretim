@@ -2151,28 +2151,52 @@ class PerformanceReportPage extends StatefulWidget {
 }
 
 class _PerformanceReportPageState extends State<PerformanceReportPage> {
+  bash
+
+mkdir -p /mnt/user-data/outputs
+cat > /mnt/user-data/outputs/A_performance_report.dart << 'DARTEOF'
+class _PerformanceReportPageState extends State<PerformanceReportPage> {
   String mode = 'makina'; // makina | operator | yardimci
   String subMode = 'uretim'; // operator modu icin: uretim | telcekme
-  String period = 'ay'; // ay | yil
+  String period = 'ay'; // ay | yil | aralik
+  DateTime rangeStart = DateTime(DateTime.now().year, DateTime.now().month, 1);
+  DateTime rangeEnd = DateTime.now();
 
   bool _inPeriod(String? dateStr) {
     final d = DateTime.tryParse(dateStr ?? '');
     if (d == null) return false;
     final now = DateTime.now();
     if (period == 'ay') return d.year == now.year && d.month == now.month;
-    return d.year == now.year;
+    if (period == 'yil') return d.year == now.year;
+    final start = DateTime(rangeStart.year, rangeStart.month, rangeStart.day);
+    final end = DateTime(rangeEnd.year, rangeEnd.month, rangeEnd.day, 23, 59, 59);
+    return !d.isBefore(start) && !d.isAfter(end);
+  }
+
+  Future<void> pickRangeStart() async {
+    final d = await showDatePicker(context: context, initialDate: rangeStart, firstDate: DateTime(2020), lastDate: DateTime(2100));
+    if (d != null) setState(() => rangeStart = d);
+  }
+
+  Future<void> pickRangeEnd() async {
+    final d = await showDatePicker(context: context, initialDate: rangeEnd, firstDate: DateTime(2020), lastDate: DateTime(2100));
+    if (d != null) setState(() => rangeEnd = d);
   }
 
   @override
   Widget build(BuildContext context) => AppStateBuilder(builder: (context) {
     final now = DateTime.now();
-    final periodLabel = period == 'ay' ? '${turkishMonths[now.month - 1]} ${now.year}' : '${now.year}';
+    final periodLabel = period == 'ay'
+        ? '${turkishMonths[now.month - 1]} ${now.year}'
+        : period == 'yil'
+            ? '${now.year}'
+            : '${fmtDate(dateStr(rangeStart))} - ${fmtDate(dateStr(rangeEnd))}';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Performans Raporları')),
       body: SafeArea(child: ListView(padding: const EdgeInsets.all(18), children: [
         Row(children: [
-          Expanded(child: ChoiceChip(label: const Text('Makina'), selected: mode == 'makina', onSelected: (_) => setState(() => mode = 'makina'))),
+          Expanded(child: ChoiceChip(label: const Text('Makine'), selected: mode == 'makina', onSelected: (_) => setState(() => mode = 'makina'))),
           const SizedBox(width: 6),
           Expanded(child: ChoiceChip(label: const Text('Operatör'), selected: mode == 'operator', onSelected: (_) => setState(() => mode = 'operator'))),
           const SizedBox(width: 6),
@@ -2191,14 +2215,24 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
           Expanded(child: ChoiceChip(label: const Text('Bu Ay'), selected: period == 'ay', onSelected: (_) => setState(() => period = 'ay'))),
           const SizedBox(width: 8),
           Expanded(child: ChoiceChip(label: const Text('Bu Yıl'), selected: period == 'yil', onSelected: (_) => setState(() => period = 'yil'))),
+          const SizedBox(width: 8),
+          Expanded(child: ChoiceChip(label: const Text('Tarih Aralığı'), selected: period == 'aralik', onSelected: (_) => setState(() => period = 'aralik'))),
         ]),
+        if (period == 'aralik') ...[
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: OutlinedButton(onPressed: pickRangeStart, child: Text('Başlangıç: ${fmtDate(dateStr(rangeStart))}'))),
+            const SizedBox(width: 8),
+            Expanded(child: OutlinedButton(onPressed: pickRangeEnd, child: Text('Bitiş: ${fmtDate(dateStr(rangeEnd))}'))),
+          ]),
+        ],
         const SizedBox(height: 6),
         Text(periodLabel, style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
         const SizedBox(height: 12),
         exportButtonsRow(
           context: context,
           fileBaseName: '${mode}_${period}_${now.year}${period == 'ay' ? '_${now.month}' : ''}',
-          title: '${mode == 'makina' ? 'Makina' : mode == 'operator' ? 'Operatör' : 'Yardımcı Operatör'} Performansı - $periodLabel',
+          title: '${mode == 'makina' ? 'Makine' : mode == 'operator' ? 'Operatör' : 'Yardımcı Operatör'} Performansı - $periodLabel',
           headers: _exportHeaders(),
           rowsBuilder: _exportRows,
         ),
@@ -2361,3 +2395,8 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
     }).toList();
   }
 }
+DARTEOF
+wc -l /mnt/user-data/outputs/A_performance_report.dart
+Output
+
+240 /mnt/user-data/outputs/A_performance_report.dart
