@@ -9,7 +9,6 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:printing/printing.dart';
 import 'firebase_options.dart';
 import 'products.dart' as seed;
@@ -31,8 +30,6 @@ const defaultMachineNames = [
   '10 mm Spanzet', '12 mm Spanzet'
 ];
 
-/// Tüm veriler Firestore'dan gerçek zamanlı dinlenir.
-/// Uygulamayı açan herkes (siz, patron, pazarlamacı) aynı veriyi görür.
 class AppState extends ChangeNotifier {
   final _db = FirebaseFirestore.instance;
   List<Map<String, dynamic>> records = [];
@@ -42,8 +39,8 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> machines = [];
   List<Map<String, dynamic>> stock = [];
   List<Map<String, dynamic>> wiredraw = [];
-  Map<String, String> productResetDates = {}; // key: product id
-  Map<String, double> productAdjustments = {}; // key: product id
+  Map<String, String> productResetDates = {};
+  Map<String, double> productAdjustments = {};
   bool loading = true;
   User? currentUser;
   bool _seededProducts = false;
@@ -281,7 +278,6 @@ class AppState extends ChangeNotifier {
 
   Future<void> signOut() => FirebaseAuth.instance.signOut();
 
-  // ---- Kayıtlar ----
   Future<void> add(Map<String, dynamic> r) async {
     r['createdAt'] = FieldValue.serverTimestamp();
     await _db.collection('records').add(r);
@@ -290,7 +286,6 @@ class AppState extends ChangeNotifier {
   Future<void> update(String id, Map<String, dynamic> r) => _db.collection('records').doc(id).update(r);
   Future<void> deleteRecord(String id) => _db.collection('records').doc(id).delete();
 
-  // ---- Ürünler ----
   Future<void> addProduct(String name, double gram, String type) async {
     final sorted = [...products]
       ..sort((a, b) => ((a['order'] as num?)?.toInt() ?? 0).compareTo((b['order'] as num?)?.toInt() ?? 0));
@@ -307,8 +302,8 @@ class AppState extends ChangeNotifier {
     batch.set(newRef, {'name': name, 'gram': gram, 'order': insertAt, 'type': type});
     await batch.commit();
   }
-    Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
-    Future<void> updateProductGram(String id, double gram) => _db.collection('products').doc(id).update({'gram': gram});
+  Future<void> deleteProduct(String id) => _db.collection('products').doc(id).delete();
+  Future<void> updateProductGram(String id, double gram) => _db.collection('products').doc(id).update({'gram': gram});
 
   Future<String?> reorderProducts(List<String> orderedIds) async {
     final map = {for (final p in products) p['id'] as String: p};
@@ -339,20 +334,16 @@ class AppState extends ChangeNotifier {
     return records.any((r) => r['date'] == d && r['status'] == 'Üretimde' && r['product'] == name);
   }
 
-  // ---- Operatörler ----
   Future<void> addOperator(String name, List<String> roles) => _db.collection('operators').add({'name': name, 'roles': roles});
   Future<void> updateOperatorRoles(String id, List<String> roles) => _db.collection('operators').doc(id).update({'roles': roles});
   Future<void> deleteOperator(String id) => _db.collection('operators').doc(id).delete();
 
-  // ---- Yardımcı Operatörler ----
   Future<void> addAssistantOperator(String name) => _db.collection('assistantOperators').add({'name': name});
   Future<void> deleteAssistantOperator(String id) => _db.collection('assistantOperators').doc(id).delete();
 
-  // ---- Makinalar ----
   Future<void> addMachine(String name) => _db.collection('machines').add({'name': name});
   Future<void> deleteMachine(String id) => _db.collection('machines').doc(id).delete();
 
-  // ---- Hammadde Stoku ----
   Future<void> addStock(double cap, String malzeme, double kg) =>
       _db.collection('stock').add({'cap': cap, 'malzeme': malzeme, 'kg': kg});
 
@@ -378,7 +369,6 @@ class AppState extends ChangeNotifier {
 
   double get totalStockKg => stock.fold(0.0, (s, r) => s + (r['kg'] as num).toDouble());
 
-  // ---- Tel Çekme (hammaddeyi üretime hazırlama) ----
   Future<String?> addWiredraw({
     required String date, required String operator, required String shift,
     required String stockId, required double kg, String note = '',
@@ -410,7 +400,6 @@ class AppState extends ChangeNotifier {
 
   List<Map<String, dynamic>> wiredrawForDate(String date) => wiredraw.where((w) => w['date'] == date).toList();
 
-  // ---- Ürün bazlı sayaç sıfırlama ve manuel düşüm ----
   Future<void> resetProductTotal(String productId) async {
     final date = dateNow();
     productResetDates = {...productResetDates, productId: date};
@@ -422,8 +411,6 @@ class AppState extends ChangeNotifier {
     }, SetOptions(merge: true));
   }
 
-  /// Bir ürünün toplamını istenen kg değerine ayarlar (elle ekleme/çıkarma
-  /// için tek yöntem — aradaki fark otomatik hesaplanıp saklanır).
   Future<void> setProductTotal(String productId, String productName, double newTotal) async {
     final produced = records
         .where((r) => r['product'] == productName && r['status'] == 'Üretimde' && _afterReset(productId, r['date'] as String))
@@ -469,8 +456,6 @@ class AppState extends ChangeNotifier {
 
 final appState = AppState();
 
-/// Sayfaların appState değişikliklerini, sekme değiştirmeden, doğrudan ve
-/// güvenilir şekilde yakalaması için her sayfanın kendi dinleyicisi.
 class AppStateBuilder extends StatelessWidget {
   final WidgetBuilder builder;
   const AppStateBuilder({super.key, required this.builder});
@@ -576,9 +561,6 @@ String dateStr(DateTime d) => d.toIso8601String().substring(0, 10);
 
 const turkishWeekdays = ['Pazartesi', 'Salı', 'Çarşamba', 'Perşembe', 'Cuma', 'Cumartesi', 'Pazar'];
 
-/// Özet ekranında gösterilecek gün: en son veri girişi yapılan tarih.
-/// Böylece hangi gün girilmemiş olursa olsun (hafta sonu, unutulan gün vb.)
-/// her zaman gerçek veriye göre doğru günü gösterir.
 String lastEntryDate() {
   final dates = <String>{
     ...appState.records.map((r) => r['date'] as String),
@@ -606,15 +588,12 @@ int _machineIndex(String m) {
 }
 int _shiftOrder(String s) => s == 'Gündüz' ? 0 : (s == 'Gece' ? 1 : 2);
 
-/// Tel çekme kayıtlarını Gündüz vardiyası üstte, Gece altta olacak şekilde sıralar.
 List<Map<String, dynamic>> sortedWiredraw(List<Map<String, dynamic>> list) {
   final copy = [...list];
   copy.sort((a, b) => _shiftOrder(a['shift'] as String).compareTo(_shiftOrder(b['shift'] as String)));
   return copy;
 }
 
-/// "Makine 23" ya da "23. Makine" biçimlerinin her ikisini de tanıyıp
-/// makina numarasını çıkarır. Eşleşme yoksa null döner.
 int? extractMakineNumber(String name) {
   final trimmed = name.trim();
   if (trimmed.toLowerCase().contains('spanzet')) return null;
@@ -630,7 +609,6 @@ String displayMachine(String m) {
   return n != null ? '$n. Makine' : m;
 }
 
-/// Daire içinde göstermek için makina adından kısa bir etiket (sadece sayı) çıkarır.
 String machineAvatarLabel(String raw) {
   final n = extractMakineNumber(raw);
   if (n != null) return '$n';
@@ -643,16 +621,12 @@ String fmtCap(num c) {
   return isWhole ? '${c.toInt()} mm' : '${c.toString().replaceAll('.', ',')} mm';
 }
 
-/// Ürün adındaki ilk sayıyı (ör. "13x36 mm..." -> 13) sıralama anahtarı olarak döner.
 double productSizeKey(String name) {
   final match = RegExp(r'^(\d+(?:[.,]\d+)?)').firstMatch(name.trim());
   if (match == null) return double.infinity;
   return double.tryParse(match.group(1)!.replaceAll(',', '.')) ?? double.infinity;
 }
 
-/// Makinaları önce "Makine N" olanlar numara sırasına göre, sonra diğerleri
-/// (Spanzet vb.) kendi içindeki numaraya göre sıralar. Yeni eklenen bir
-/// makina her zaman doğru sayısal konuma yerleşir, listenin sonuna düşmez.
 List<Object> machineSortKey(String name) {
   final n = extractMakineNumber(name);
   if (n != null) return [0, n.toDouble()];
@@ -669,8 +643,6 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
-/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup telefonun
-/// paylaşım menüsünü açar (Drive'a kaydet, WhatsApp/e-posta ile gönder vb.).
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -682,7 +654,8 @@ Future<void> exportRows({
   try {
     Directory dir;
     try {
-      dir = (await getExternalStorageDirectory()) ?? await getTemporaryDirectory();
+      final d = await getExternalStorageDirectory().timeout(const Duration(seconds: 5));
+      dir = d ?? await getTemporaryDirectory();
     } catch (_) {
       dir = await getTemporaryDirectory();
     }
@@ -700,12 +673,21 @@ Future<void> exportRows({
       path = '${dir.path}/$fileBaseName.xlsx';
       await File(path).writeAsBytes(bytes);
     } else {
-      final fontRegular = await PdfGoogleFonts.notoSansRegular();
-      final fontBold = await PdfGoogleFonts.notoSansBold();
+      pw.Font? fontRegular;
+      pw.Font? fontBold;
+      try {
+        fontRegular = await PdfGoogleFonts.notoSansRegular().timeout(const Duration(seconds: 8));
+        fontBold = await PdfGoogleFonts.notoSansBold().timeout(const Duration(seconds: 8));
+      } catch (_) {
+        fontRegular = null;
+        fontBold = null;
+      }
       final doc = pw.Document();
       doc.addPage(pw.MultiPage(
         pageFormat: PdfPageFormat.a4.landscape,
-        theme: pw.ThemeData.withFont(base: fontRegular, bold: fontBold),
+        theme: (fontRegular != null && fontBold != null)
+            ? pw.ThemeData.withFont(base: fontRegular, bold: fontBold)
+            : null,
         build: (ctx) => [
           pw.Text(title, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold)),
           pw.SizedBox(height: 10),
@@ -726,11 +708,8 @@ Future<void> exportRows({
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedildi: $path'), duration: const Duration(seconds: 6)));
     }
     try {
-      await Share.shareXFiles([XFile(path)], text: title);
-    } catch (_) {
-      // Paylaşım menüsü açılamadı (ör. PC/BlueStacks) — dosya zaten
-      // yukarıdaki konuma kaydedildi, bu bir sorun değil.
-    }
+      await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
+    } catch (_) {}
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dışa aktarılamadı: $e')));
@@ -738,7 +717,6 @@ Future<void> exportRows({
   }
 }
 
-/// İki dışa aktarma düğmesini (Excel / PDF) yan yana gösteren küçük bir satır.
 Widget exportButtonsRow({
   required BuildContext context,
   required String fileBaseName,
@@ -801,8 +779,6 @@ class Logo extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Image.asset('assets/bas_zincir_icon.png', height: height);
 }
-
-// =================== GİRİŞ (LOGIN) ===================
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -867,8 +843,6 @@ class _LoginPageState extends State<LoginPage> {
     );
   }
 }
-
-// =================== ÖZET (DASHBOARD) ===================
 
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
@@ -942,8 +916,6 @@ class DashboardPage extends StatelessWidget {
     Text('$n', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: c)), Text(t, style: const TextStyle(fontSize: 12))
   ])));
 }
-
-// =================== ÜRETİM GİRİŞİ ===================
 
 class EntryPage extends StatefulWidget {
   const EntryPage({super.key});
@@ -1183,8 +1155,6 @@ class _EntryPageState extends State<EntryPage> {
   }
 }
 
-// =================== KAYITLAR (DÜZENLE / SİL) ===================
-
 class RecordsPage extends StatefulWidget {
   const RecordsPage({super.key});
   @override
@@ -1403,8 +1373,6 @@ class _EditRecordSheetState extends State<EditRecordSheet> {
   }
 }
 
-// =================== TAKVİM ===================
-
 class CalendarPage extends StatefulWidget {
   const CalendarPage({super.key});
   @override
@@ -1473,7 +1441,7 @@ class _CalendarPageState extends State<CalendarPage> {
       Card(child: ListTile(
         leading: const Icon(Icons.leaderboard_outlined),
         title: const Text('Performans Raporları'),
-        subtitle: const Text('Makina, Operatör ve Yardımcı Operatör bazlı aylık/yıllık raporlar'),
+        subtitle: const Text('Makine, Operatör ve Yardımcı Operatör bazlı raporlar'),
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PerformanceReportPage())),
       )),
@@ -1514,8 +1482,6 @@ class _CalendarPageState extends State<CalendarPage> {
     ]));
   });
 }
-
-// =================== HAMMADDE STOKU ===================
 
 class StockPage extends StatefulWidget {
   const StockPage({super.key});
@@ -1580,7 +1546,6 @@ class _StockPageState extends State<StockPage> {
     }
   }
 
-  /// Çapa göre küçükten büyüğe, aynı çapta malzeme adına göre sabit sıralama.
   List<Map<String, dynamic>> sortedStock() {
     final list = [...appState.stock];
     list.sort((a, b) {
@@ -1642,8 +1607,6 @@ class _StockPageState extends State<StockPage> {
     ]));
   });
 }
-
-// =================== RAPORLAR (KÜMÜLATİF) ===================
 
 class ReportsPage extends StatefulWidget {
   const ReportsPage({super.key});
@@ -1794,8 +1757,6 @@ class _ReportsPageState extends State<ReportsPage> {
     ));
   }
 }
-
-// =================== YÖNETİM ===================
 
 class AccountPage extends StatelessWidget {
   const AccountPage({super.key});
@@ -1949,7 +1910,7 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
     name.clear(); gram.clear();
   }
 
-    Future<void> confirmDelete(String id, String label) async {
+  Future<void> confirmDelete(String id, String label) async {
     final ok = await showDialog<bool>(context: context, builder: (_) => AlertDialog(
       title: const Text('Ürünü sil'),
       content: Text('"$label" silinsin mi? Geçmiş üretim kayıtları etkilenmez.'),
@@ -1998,9 +1959,13 @@ class _ProductsManagePageState extends State<ProductsManagePage> {
         ]))),
         const SizedBox(height: 12),
         ...appState.products.map((p) => Card(child: ListTile(
+          onTap: () => editGram(p),
           title: Text(p['name']),
           subtitle: Text('${p['gram']} g/bakla  •  ${p['type'] == 'spanzet' ? 'Spanzet' : 'Zincir'}'),
-          trailing: IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(p['id'], p['name'])),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            IconButton(icon: const Icon(Icons.edit_outlined), onPressed: () => editGram(p)),
+            IconButton(icon: const Icon(Icons.delete_outline, color: Colors.red), onPressed: () => confirmDelete(p['id'], p['name'])),
+          ]),
         ))),
       ])),
     );
@@ -2142,8 +2107,6 @@ class _AssistantOperatorsManagePageState extends State<AssistantOperatorsManageP
   });
 }
 
-// =================== PERFORMANS RAPORLARI ===================
-
 class PerformanceReportPage extends StatefulWidget {
   const PerformanceReportPage({super.key});
   @override
@@ -2151,14 +2114,9 @@ class PerformanceReportPage extends StatefulWidget {
 }
 
 class _PerformanceReportPageState extends State<PerformanceReportPage> {
-  bash
-
-mkdir -p /mnt/user-data/outputs
-cat > /mnt/user-data/outputs/A_performance_report.dart << 'DARTEOF'
-class _PerformanceReportPageState extends State<PerformanceReportPage> {
-  String mode = 'makina'; // makina | operator | yardimci
-  String subMode = 'uretim'; // operator modu icin: uretim | telcekme
-  String period = 'ay'; // ay | yil | aralik
+  String mode = 'makina';
+  String subMode = 'uretim';
+  String period = 'ay';
   DateTime rangeStart = DateTime(DateTime.now().year, DateTime.now().month, 1);
   DateTime rangeEnd = DateTime.now();
 
@@ -2395,8 +2353,3 @@ class _PerformanceReportPageState extends State<PerformanceReportPage> {
     }).toList();
   }
 }
-DARTEOF
-wc -l /mnt/user-data/outputs/A_performance_report.dart
-Output
-
-240 /mnt/user-data/outputs/A_performance_report.dart
