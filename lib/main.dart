@@ -645,11 +645,33 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
-/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup uygulamanın
-/// kendi geçici klasörüne kaydeder. PC/BlueStacks gibi ortamlarda Android'in
-/// "Paylaş" penceresi bazen hiç açılmayıp tüm ekranı kilitleyebildiği için,
-/// paylaşım OTOMATİK tetiklenmiyor — sadece dosya güvenle kaydediliyor ve
-/// kaydedilen yere dair bilgi + isteğe bağlı bir "Paylaş" düğmesi gösteriliyor.
+/// Excel dosyasını arka planda (ekranı dondurmadan) oluşturur.
+/// compute() ile ayrı bir işlemde çalıştığı için ana ekranın tepkisiz
+/// kalmasını önler. Bu fonksiyon dosyanın EN DIŞINDA (herhangi bir
+/// class'ın içinde değil) olmalı.
+Uint8List _buildExcelBytesTopLevel(_ExcelBuildArgs args) {
+  final book = xl.Excel.createExcel();
+  final sheetName = book.getDefaultSheet()!;
+  final sheet = book[sheetName];
+  sheet.appendRow(args.headers.map((h) => xl.TextCellValue(h)).toList());
+  for (final r in args.rows) {
+    sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
+  }
+  final bytes = book.encode();
+  if (bytes == null) throw Exception('Excel oluşturulamadı');
+  return Uint8List.fromList(bytes);
+}
+
+class _ExcelBuildArgs {
+  final List<String> headers;
+  final List<List<String>> rows;
+  _ExcelBuildArgs(this.headers, this.rows);
+}
+
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup, mümkünse
+/// erişilebilir bir klasöre (aksi halde uygulamanın kendi klasörüne) kaydeder.
+/// Ağır hesaplama (Excel) ekranı dondurmasın diye arka planda (compute)
+/// çalıştırılır. Paylaşım otomatik açılmaz, isteğe bağlı bir düğmeyle tetiklenir.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -658,19 +680,22 @@ Future<void> exportRows({
   required List<List<String>> rows,
   required bool asExcel,
 }) async {
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Oluşturuluyor, lütfen bekleyin...'), duration: Duration(seconds: 2)),
+    );
+  }
   try {
-    final dir = await getTemporaryDirectory();
+    Directory dir;
+    try {
+      final d = await getExternalStorageDirectory().timeout(const Duration(seconds: 5));
+      dir = d ?? await getTemporaryDirectory();
+    } catch (_) {
+      dir = await getTemporaryDirectory();
+    }
     late String path;
     if (asExcel) {
-      final book = xl.Excel.createExcel();
-      final sheetName = book.getDefaultSheet()!;
-      final sheet = book[sheetName];
-      sheet.appendRow(headers.map((h) => xl.TextCellValue(h)).toList());
-      for (final r in rows) {
-        sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
-      }
-      final bytes = book.encode();
-      if (bytes == null) throw Exception('Excel oluşturulamadı');
+      final bytes = await compute(_buildExcelBytesTopLevel, _ExcelBuildArgs(headers, rows));
       path = '${dir.path}/$fileBaseName.xlsx';
       await File(path).writeAsBytes(bytes);
     } else {
@@ -714,9 +739,7 @@ Future<void> exportRows({
           onPressed: () async {
             try {
               await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
-            } catch (_) {
-              // Paylaşım açılamadı (ör. PC/BlueStacks) — dosya zaten kayıtlı.
-            }
+            } catch (_) {}
           },
         ),
       ));
