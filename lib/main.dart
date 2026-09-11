@@ -644,6 +644,12 @@ int compareMachineNames(String a, String b) {
 }
 
 Future<void> exportRows({
+  /// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup uygulamanın
+/// kendi geçici klasörüne kaydeder. PC/BlueStacks gibi ortamlarda Android'in
+/// "Paylaş" penceresi bazen hiç açılmayıp tüm ekranı kilitleyebildiği için,
+/// paylaşım OTOMATİK tetiklenmiyor — sadece dosya güvenle kaydediliyor ve
+/// kaydedilen yere dair bilgi + isteğe bağlı bir "Paylaş" düğmesi gösteriliyor.
+Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
   required String title,
@@ -652,13 +658,7 @@ Future<void> exportRows({
   required bool asExcel,
 }) async {
   try {
-    Directory dir;
-    try {
-      final d = await getExternalStorageDirectory().timeout(const Duration(seconds: 5));
-      dir = d ?? await getTemporaryDirectory();
-    } catch (_) {
-      dir = await getTemporaryDirectory();
-    }
+    final dir = await getTemporaryDirectory();
     late String path;
     if (asExcel) {
       final book = xl.Excel.createExcel();
@@ -705,11 +705,21 @@ Future<void> exportRows({
       await File(path).writeAsBytes(bytes);
     }
     if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Kaydedildi: $path'), duration: const Duration(seconds: 6)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Kaydedildi: $path'),
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Paylaş',
+          onPressed: () async {
+            try {
+              await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
+            } catch (_) {
+              // Paylaşım açılamadı (ör. PC/BlueStacks) — dosya zaten kayıtlı.
+            }
+          },
+        ),
+      ));
     }
-    try {
-      await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
-    } catch (_) {}
   } catch (e) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Dışa aktarılamadı: $e')));
