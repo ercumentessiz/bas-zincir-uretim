@@ -643,7 +643,6 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
-Future<void> exportRows({
   /// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup uygulamanın
 /// kendi geçici klasörüne kaydeder. PC/BlueStacks gibi ortamlarda Android'in
 /// "Paylaş" penceresi bazen hiç açılmayıp tüm ekranı kilitleyebildiği için,
