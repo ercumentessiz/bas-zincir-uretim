@@ -643,9 +643,10 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
-/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup, mümkünse
-/// erişilebilir bir klasöre (aksi halde uygulamanın kendi klasörüne) kaydeder.
-/// Paylaşım otomatik açılmaz, isteğe bağlı bir düğmeyle tetiklenir.
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup uygulamanın
+/// kendi güvenli (izin gerektirmeyen) geçici klasörüne kaydeder. Dışarı almak
+/// için "Paylaş" düğmesi kullanılır — bu, BlueStacks'te de çalıştığı doğrulanan
+/// tek güvenilir yöntem.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -660,13 +661,7 @@ Future<void> exportRows({
     );
   }
   try {
-    Directory dir;
-    try {
-      final d = await getExternalStorageDirectory().timeout(const Duration(seconds: 5));
-      dir = d ?? await getTemporaryDirectory();
-    } catch (_) {
-      dir = await getTemporaryDirectory();
-    }
+    final dir = await getTemporaryDirectory();
     late String path;
     if (asExcel) {
       final book = xl.Excel.createExcel();
@@ -714,14 +709,12 @@ Future<void> exportRows({
     }
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('Kaydedildi: $path'),
-        duration: const Duration(seconds: 8),
+        content: const Text('Hazır. Dosyayı almak için "Paylaş" deyin.'),
+        duration: const Duration(seconds: 10),
         action: SnackBarAction(
           label: 'Paylaş',
-          onPressed: () async {
-            try {
-              await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
-            } catch (_) {}
+          onPressed: () {
+            Share.shareXFiles([XFile(path)], text: title);
           },
         ),
       ));
