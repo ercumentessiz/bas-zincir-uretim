@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show compute;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -645,33 +643,9 @@ int compareMachineNames(String a, String b) {
   return (ka[1] as double).compareTo(kb[1] as double);
 }
 
-/// Excel dosyasını arka planda (ekranı dondurmadan) oluşturur.
-/// compute() ile ayrı bir işlemde çalıştığı için ana ekranın tepkisiz
-/// kalmasını önler. Bu fonksiyon dosyanın EN DIŞINDA (herhangi bir
-/// class'ın içinde değil) olmalı.
-Uint8List _buildExcelBytesTopLevel(_ExcelBuildArgs args) {
-  final book = xl.Excel.createExcel();
-  final sheetName = book.getDefaultSheet()!;
-  final sheet = book[sheetName];
-  sheet.appendRow(args.headers.map((h) => xl.TextCellValue(h)).toList());
-  for (final r in args.rows) {
-    sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
-  }
-  final bytes = book.encode();
-  if (bytes == null) throw Exception('Excel oluşturulamadı');
-  return Uint8List.fromList(bytes);
-}
-
-class _ExcelBuildArgs {
-  final List<String> headers;
-  final List<List<String>> rows;
-  _ExcelBuildArgs(this.headers, this.rows);
-}
-
 /// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup, mümkünse
 /// erişilebilir bir klasöre (aksi halde uygulamanın kendi klasörüne) kaydeder.
-/// Ağır hesaplama (Excel) ekranı dondurmasın diye arka planda (compute)
-/// çalıştırılır. Paylaşım otomatik açılmaz, isteğe bağlı bir düğmeyle tetiklenir.
+/// Paylaşım otomatik açılmaz, isteğe bağlı bir düğmeyle tetiklenir.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -695,7 +669,15 @@ Future<void> exportRows({
     }
     late String path;
     if (asExcel) {
-      final bytes = await compute(_buildExcelBytesTopLevel, _ExcelBuildArgs(headers, rows));
+      final book = xl.Excel.createExcel();
+      final sheetName = book.getDefaultSheet()!;
+      final sheet = book[sheetName];
+      sheet.appendRow(headers.map((h) => xl.TextCellValue(h)).toList());
+      for (final r in rows) {
+        sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
+      }
+      final bytes = book.encode();
+      if (bytes == null) throw Exception('Excel oluşturulamadı');
       path = '${dir.path}/$fileBaseName.xlsx';
       await File(path).writeAsBytes(bytes);
     } else {
