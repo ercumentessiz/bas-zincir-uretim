@@ -646,6 +646,11 @@ int compareMachineNames(String a, String b) {
 /// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup, mümkünse
 /// erişilebilir bir klasöre (aksi halde uygulamanın kendi klasörüne) kaydeder.
 /// Paylaşım otomatik açılmaz, isteğe bağlı bir düğmeyle tetiklenir.
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup uygulamanın
+/// kendi güvenli geçici klasörüne kaydeder. NOT: Bazı ortamlarda (ör. BlueStacks
+/// üzerinden PC) Android'in paylaşım penceresi donmaya sebep olduğu için
+/// otomatik/manuel paylaşım TAMAMEN kaldırıldı — dosya sadece kaydedilir,
+/// yolu gösterilir. PC'de dosyayı almak için ADB (adb pull) kullanılabilir.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -660,13 +665,7 @@ Future<void> exportRows({
     );
   }
   try {
-    Directory dir;
-    try {
-      final d = await getExternalStorageDirectory().timeout(const Duration(seconds: 5));
-      dir = d ?? await getTemporaryDirectory();
-    } catch (_) {
-      dir = await getTemporaryDirectory();
-    }
+    final dir = await getTemporaryDirectory();
     late String path;
     if (asExcel) {
       final book = xl.Excel.createExcel();
@@ -715,15 +714,7 @@ Future<void> exportRows({
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Kaydedildi: $path'),
-        duration: const Duration(seconds: 8),
-        action: SnackBarAction(
-          label: 'Paylaş',
-          onPressed: () async {
-            try {
-              await Share.shareXFiles([XFile(path)], text: title).timeout(const Duration(seconds: 8));
-            } catch (_) {}
-          },
-        ),
+        duration: const Duration(seconds: 12),
       ));
     }
   } catch (e) {
@@ -1849,11 +1840,6 @@ class ManagementPage extends StatelessWidget {
         trailing: const Icon(Icons.chevron_right),
         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AssistantOperatorsManagePage())),
       )),
-      const SizedBox(height: 8),
-      FilledButton(
-        onPressed: () => Share.share('Bu bir test mesajıdır, dosya içermiyor.'),
-        child: const Text('TEST: Metin Paylaş (dosyasız)'),
-      ),
       const SizedBox(height: 8),
       OutlinedButton.icon(onPressed: () => appState.signOut(), icon: const Icon(Icons.logout), label: const Text('Çıkış Yap')),
     ]));
