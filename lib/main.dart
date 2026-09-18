@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -10,6 +11,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:printing/printing.dart';
+import 'package:file_saver/file_saver.dart';
 import 'firebase_options.dart';
 import 'products.dart' as seed;
 import 'stock_seed.dart';
@@ -651,6 +653,10 @@ int compareMachineNames(String a, String b) {
 /// üzerinden PC) Android'in paylaşım penceresi donmaya sebep olduğu için
 /// otomatik/manuel paylaşım TAMAMEN kaldırıldı — dosya sadece kaydedilir,
 /// yolu gösterilir. PC'de dosyayı almak için ADB (adb pull) kullanılabilir.
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturup, mümkünse
+/// doğrudan cihazın "İndirilenler" klasörüne kaydeder (file_saver ile — bu,
+/// paylaşım penceresi açmadığı için BlueStacks'te donma yaşatmıyor). Olmazsa
+/// uygulamanın kendi güvenli klasörüne yedek olarak kaydedilir.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -665,8 +671,7 @@ Future<void> exportRows({
     );
   }
   try {
-    final dir = await getTemporaryDirectory();
-    late String path;
+    List<int> bytes;
     if (asExcel) {
       final book = xl.Excel.createExcel();
       final sheetName = book.getDefaultSheet()!;
@@ -675,10 +680,9 @@ Future<void> exportRows({
       for (final r in rows) {
         sheet.appendRow(r.map((c) => xl.TextCellValue(c)).toList());
       }
-      final bytes = book.encode();
-      if (bytes == null) throw Exception('Excel oluşturulamadı');
-      path = '${dir.path}/$fileBaseName.xlsx';
-      await File(path).writeAsBytes(bytes);
+      final encoded = book.encode();
+      if (encoded == null) throw Exception('Excel oluşturulamadı');
+      bytes = encoded;
     } else {
       pw.Font? fontRegular;
       pw.Font? fontBold;
@@ -707,10 +711,30 @@ Future<void> exportRows({
           ),
         ],
       ));
-      final bytes = await doc.save();
-      path = '${dir.path}/$fileBaseName.pdf';
-      await File(path).writeAsBytes(bytes);
+      bytes = await doc.save();
     }
+
+    try {
+      await FileSaver.instance.saveFile(
+        name: fileBaseName,
+        bytes: Uint8List.fromList(bytes),
+        ext: asExcel ? 'xlsx' : 'pdf',
+        mimeType: asExcel ? MimeType.microsoftExcel : MimeType.pdf,
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('İndirilenler klasörüne kaydedildi.'),
+          duration: Duration(seconds: 6),
+        ));
+      }
+      return;
+    } catch (_) {
+      // file_saver başarısız olursa uygulamanın kendi klasörüne yedekle.
+    }
+
+    final dir = await getTemporaryDirectory();
+    final path = '${dir.path}/$fileBaseName.${asExcel ? 'xlsx' : 'pdf'}';
+    await File(path).writeAsBytes(bytes);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Kaydedildi: $path'),
