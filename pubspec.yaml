@@ -20,6 +20,7 @@ dependencies:
   path_provider: ^2.1.1
   share_plus: any
   printing: ^5.11.0
+  firebase_storage: any
 
 dev_dependencies:
   flutter_test:
