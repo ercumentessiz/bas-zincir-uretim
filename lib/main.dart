@@ -655,6 +655,12 @@ int compareMachineNames(String a, String b) {
 /// doğrudan cihazın "İndirilenler" klasörüne kaydeder (file_saver ile — bu,
 /// paylaşım penceresi açmadığı için BlueStacks'te donma yaşatmıyor). Olmazsa
 /// uygulamanın kendi güvenli klasörüne yedek olarak kaydedilir.
+/// Bir tabloyu (başlık + satırlar) Excel veya PDF olarak oluşturur.
+/// Önce cihazın genel "İndirilenler" klasörüne doğrudan yazmayı dener,
+/// olmazsa uygulamanın kendi güvenli klasörüne kaydeder. Ardından "Paylaş"
+/// düğmesi gösterilir (telefonda normal çalışır). PC/BlueStacks'te Paylaş
+/// donma yaşatabileceği için, gösterilen dosya yolu üzerinden ADB (adb pull)
+/// ile de alınabilir.
 Future<void> exportRows({
   required BuildContext context,
   required String fileBaseName,
@@ -670,6 +676,7 @@ Future<void> exportRows({
   }
   try {
     List<int> bytes;
+    final ext = asExcel ? 'xlsx' : 'pdf';
     if (asExcel) {
       final book = xl.Excel.createExcel();
       final sheetName = book.getDefaultSheet()!;
@@ -712,31 +719,30 @@ Future<void> exportRows({
       bytes = await doc.save();
     }
 
+    String path;
     try {
-      await FileSaver.instance.saveFile(
-        name: fileBaseName,
-        bytes: Uint8List.fromList(bytes),
-        ext: asExcel ? 'xlsx' : 'pdf',
-        mimeType: asExcel ? MimeType.microsoftExcel : MimeType.pdf,
-      );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('İndirilenler klasörüne kaydedildi.'),
-          duration: Duration(seconds: 6),
-        ));
+      final downloadsDir = Directory('/storage/emulated/0/Download');
+      if (!await downloadsDir.exists()) {
+        await downloadsDir.create(recursive: true);
       }
-      return;
+      path = '${downloadsDir.path}/$fileBaseName.$ext';
+      await File(path).writeAsBytes(bytes);
     } catch (_) {
-      // file_saver başarısız olursa uygulamanın kendi klasörüne yedekle.
+      final dir = await getTemporaryDirectory();
+      path = '${dir.path}/$fileBaseName.$ext';
+      await File(path).writeAsBytes(bytes);
     }
 
-    final dir = await getTemporaryDirectory();
-    final path = '${dir.path}/$fileBaseName.${asExcel ? 'xlsx' : 'pdf'}';
-    await File(path).writeAsBytes(bytes);
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('Kaydedildi: $path'),
         duration: const Duration(seconds: 12),
+        action: SnackBarAction(
+          label: 'Paylaş',
+          onPressed: () {
+            Share.shareXFiles([XFile(path)], text: title);
+          },
+        ),
       ));
     }
   } catch (e) {
